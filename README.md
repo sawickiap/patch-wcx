@@ -20,6 +20,10 @@ Source code and issue tracker: [github.com/sawickiap/patch-wcx](https://github.c
 
 Virtual files contain patch documents. For example, viewing or extracting `src/main.cpp` gives you the patch for that file, not its reconstructed C++ source. The plugin also doesn't support adding/replacing entries.
 
+## Video
+
+[![Watch video](https://img.youtube.com/vi/7WrxciCwWbY/hqdefault.jpg)](https://www.youtube.com/watch?v=7WrxciCwWbY)
+
 ## Requirements
 
 - x64 PC (Intel/AMD)
