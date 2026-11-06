@@ -1,0 +1,336 @@
+From 8c13598b45893b803366dd03ab6adaa30f8cd687 Mon Sep 17 00:00:00 2001
+From: Adam Sawicki <sawickiap@poczta.onet.pl>
+Date: Sun, 10 Apr 2022 21:15:03 +0200
+Subject: [PATCH] Moved shaders from WorkingDir/Data/ to WorkingDir/Shaders/;
+ renamed "ThreeD"/"3D" shader to "GBuffer".
+
+---
+ Source/Game.cpp                               |  2 +-
+ Source/RegEngine.vcxproj                      | 22 +++++---------
+ Source/RegEngine.vcxproj.filters              | 28 ++++++++---------
+ Source/Renderer.cpp                           | 30 +++++++++----------
+ Source/Renderer.hpp                           |  4 +--
+ WorkingDir/{Data => Shaders}/Ambient.hlsl     |  0
+ .../ThreeD.hlsl => Shaders/GBuffer.hlsl}      |  0
+ .../{Data => Shaders}/Include/Common.hlsl     |  0
+ .../Include/LightingCommon.hlsl               |  0
+ .../Include/ShaderConstants.h                 |  0
+ WorkingDir/{Data => Shaders}/Lighting.hlsl    |  0
+ .../{Data => Shaders}/Postprocessing.hlsl     |  0
+ 12 files changed, 39 insertions(+), 47 deletions(-)
+ rename WorkingDir/{Data => Shaders}/Ambient.hlsl (100%)
+ rename WorkingDir/{Data/ThreeD.hlsl => Shaders/GBuffer.hlsl} (100%)
+ rename WorkingDir/{Data => Shaders}/Include/Common.hlsl (100%)
+ rename WorkingDir/{Data => Shaders}/Include/LightingCommon.hlsl (100%)
+ rename WorkingDir/{Data => Shaders}/Include/ShaderConstants.h (100%)
+ rename WorkingDir/{Data => Shaders}/Lighting.hlsl (100%)
+ rename WorkingDir/{Data => Shaders}/Postprocessing.hlsl (100%)
+
+diff --git a/Source/Game.cpp b/Source/Game.cpp
+index dd5bcbe..cb366ee 100644
+--- a/Source/Game.cpp
++++ b/Source/Game.cpp
+@@ -5,7 +5,7 @@
+ #include "Cameras.hpp"
+ #include "Settings.hpp"
+ #include "ImGuiUtils.hpp"
+-#include "../WorkingDir/Data/Include/ShaderConstants.h"
++#include "../WorkingDir/Shaders/Include/ShaderConstants.h"
+ 
+ extern VecSetting<glm::uvec2> g_Size;
+ 
+diff --git a/Source/RegEngine.vcxproj b/Source/RegEngine.vcxproj
+index 0d6a165..00fd730 100644
+--- a/Source/RegEngine.vcxproj
++++ b/Source/RegEngine.vcxproj
+@@ -173,7 +173,7 @@
+     <ClInclude Include="..\ThirdParty\imgui-1.87\misc\cpp\imgui_stdlib.h" />
+     <ClInclude Include="..\ThirdParty\str_view\str_view.hpp" />
+     <ClInclude Include="..\ThirdParty\WinFontRender\WinFontRender.h" />
+-    <ClInclude Include="..\WorkingDir\Data\Include\ShaderConstants.h" />
++    <ClInclude Include="..\WorkingDir\Shaders\Include\ShaderConstants.h" />
+     <ClInclude Include="AssimpUtils.hpp" />
+     <ClInclude Include="BaseUtils.hpp" />
+     <ClInclude Include="Cameras.hpp" />
+@@ -205,30 +205,22 @@
+     <None Include="packages.config" />
+   </ItemGroup>
+   <ItemGroup>
+-    <Text Include="..\WorkingDir\Data\Include\Common.hlsl">
++    <Text Include="..\WorkingDir\Shaders\Ambient.hlsl">
+       <FileType>Document</FileType>
+     </Text>
+-  </ItemGroup>
+-  <ItemGroup>
+-    <Text Include="..\WorkingDir\Data\Postprocessing.hlsl">
++    <Text Include="..\WorkingDir\Shaders\GBuffer.hlsl">
+       <FileType>Document</FileType>
+     </Text>
+-  </ItemGroup>
+-  <ItemGroup>
+-    <Text Include="..\WorkingDir\Data\Lighting.hlsl">
++    <Text Include="..\WorkingDir\Shaders\Include\Common.hlsl">
+       <FileType>Document</FileType>
+     </Text>
+-  </ItemGroup>
+-  <ItemGroup>
+-    <Text Include="..\WorkingDir\Data\Ambient.hlsl">
++    <Text Include="..\WorkingDir\Shaders\Include\LightingCommon.hlsl">
+       <FileType>Document</FileType>
+     </Text>
+-    <Text Include="..\WorkingDir\Data\Include\LightingCommon.hlsl">
++    <Text Include="..\WorkingDir\Shaders\Lighting.hlsl">
+       <FileType>Document</FileType>
+     </Text>
+-  </ItemGroup>
+-  <ItemGroup>
+-    <Text Include="..\WorkingDir\Data\ThreeD.hlsl">
++    <Text Include="..\WorkingDir\Shaders\Postprocessing.hlsl">
+       <FileType>Document</FileType>
+     </Text>
+   </ItemGroup>
+diff --git a/Source/RegEngine.vcxproj.filters b/Source/RegEngine.vcxproj.filters
+index 5775b0f..d94670f 100644
+--- a/Source/RegEngine.vcxproj.filters
++++ b/Source/RegEngine.vcxproj.filters
+@@ -66,9 +66,6 @@
+     <Filter Include="ThirdParty\D3D12MemoryAllocator">
+       <UniqueIdentifier>{02e0fc4e-e869-458e-9d29-a6b8ba1d71a9}</UniqueIdentifier>
+     </Filter>
+-    <Filter Include="Shaders\Include">
+-      <UniqueIdentifier>{a89f3837-609c-4538-b9da-efd7d780a7ca}</UniqueIdentifier>
+-    </Filter>
+     <Filter Include="ConfigFiles">
+       <UniqueIdentifier>{8d665066-43b7-4386-919a-4684141589c2}</UniqueIdentifier>
+     </Filter>
+@@ -87,6 +84,9 @@
+     <Filter Include="ThirdParty\IconFontCppHeaders">
+       <UniqueIdentifier>{6c45d41f-0e07-4e15-85c6-cb73c78a67e6}</UniqueIdentifier>
+     </Filter>
++    <Filter Include="Shaders\Include">
++      <UniqueIdentifier>{7a8a7cec-acd8-4e57-9907-711b2a5f2e88}</UniqueIdentifier>
++    </Filter>
+   </ItemGroup>
+   <ItemGroup>
+     <ClInclude Include="..\ThirdParty\d3dx12\d3dx12.h">
+@@ -116,9 +116,6 @@
+     <ClInclude Include="Game.hpp" />
+     <ClInclude Include="Cameras.hpp" />
+     <ClInclude Include="Streams.hpp" />
+-    <ClInclude Include="..\WorkingDir\Data\Include\ShaderConstants.h">
+-      <Filter>Shaders\Include</Filter>
+-    </ClInclude>
+     <ClInclude Include="SmallFileCache.hpp" />
+     <ClInclude Include="Main.hpp" />
+     <ClInclude Include="..\ThirdParty\imgui-1.87\imconfig.h">
+@@ -153,6 +150,9 @@
+       <Filter>ThirdParty\IconFontCppHeaders</Filter>
+     </ClInclude>
+     <ClInclude Include="Time.hpp" />
++    <ClInclude Include="..\WorkingDir\Shaders\Include\ShaderConstants.h">
++      <Filter>Shaders\Include</Filter>
++    </ClInclude>
+   </ItemGroup>
+   <ItemGroup>
+     <Natvis Include="..\ThirdParty\str_view\str_view.natvis">
+@@ -173,22 +173,22 @@
+     </None>
+   </ItemGroup>
+   <ItemGroup>
+-    <Text Include="..\WorkingDir\Data\Include\Common.hlsl">
++    <Text Include="..\WorkingDir\Shaders\Include\Common.hlsl">
+       <Filter>Shaders\Include</Filter>
+     </Text>
+-    <Text Include="..\WorkingDir\Data\Postprocessing.hlsl">
+-      <Filter>Shaders</Filter>
++    <Text Include="..\WorkingDir\Shaders\Include\LightingCommon.hlsl">
++      <Filter>Shaders\Include</Filter>
+     </Text>
+-    <Text Include="..\WorkingDir\Data\Lighting.hlsl">
++    <Text Include="..\WorkingDir\Shaders\Ambient.hlsl">
+       <Filter>Shaders</Filter>
+     </Text>
+-    <Text Include="..\WorkingDir\Data\Ambient.hlsl">
++    <Text Include="..\WorkingDir\Shaders\GBuffer.hlsl">
+       <Filter>Shaders</Filter>
+     </Text>
+-    <Text Include="..\WorkingDir\Data\Include\LightingCommon.hlsl">
+-      <Filter>Shaders\Include</Filter>
++    <Text Include="..\WorkingDir\Shaders\Lighting.hlsl">
++      <Filter>Shaders</Filter>
+     </Text>
+-    <Text Include="..\WorkingDir\Data\ThreeD.hlsl">
++    <Text Include="..\WorkingDir\Shaders\Postprocessing.hlsl">
+       <Filter>Shaders</Filter>
+     </Text>
+   </ItemGroup>
+diff --git a/Source/Renderer.cpp b/Source/Renderer.cpp
+index cb592ba..9c48376 100644
+--- a/Source/Renderer.cpp
++++ b/Source/Renderer.cpp
+@@ -18,7 +18,7 @@
+ #include <assimp/DefaultLogger.hpp>
+ #include <assimp/vector2.h>
+ #include <assimp/vector3.h>
+-#include "../WorkingDir/Data/Include/ShaderConstants.h"
++#include "../WorkingDir/Shaders/Include/ShaderConstants.h"
+ #include "../ThirdParty/imgui-1.87/backends/imgui_impl_dx12.h"
+ 
+ static const D3D_FEATURE_LEVEL MY_D3D_FEATURE_LEVEL = D3D_FEATURE_LEVEL_12_0;
+@@ -325,7 +325,7 @@ void Renderer::Init()
+     {
+         wstr_view MACRO_NAMES[] = { L"ALPHA_TEST" };
+         m_GBufferMultiPixelShader = std::make_unique<MultiShader>();
+-        m_GBufferMultiPixelShader->Init(ShaderType::Pixel, L"Data/ThreeD.hlsl", L"MainPS", MACRO_NAMES);
++        m_GBufferMultiPixelShader->Init(ShaderType::Pixel, L"Shaders/GBuffer.hlsl", L"MainPS", MACRO_NAMES);
+     }
+ 
+ 	CreateCommandQueues();
+@@ -375,7 +375,7 @@ void Renderer::Reload(bool refreshAll)
+     ClearGBufferShader();
+     ClearModel();
+ 
+-    Create3DPipelineState();
++    CreateGBufferPipelineState();
+     CreatePostprocessingPipelineState();
+     CreateLightingPipelineStates();
+     LoadModel(refreshAll);
+@@ -766,14 +766,14 @@ void Renderer::CreateResources()
+         m_GBuffers[i]->Init(resDesc, D3D12_RESOURCE_STATE_RENDER_TARGET, std::format(L"GBuffer {}", GBUFFER_NAMES[i]));
+     }
+ 
+-	Create3DPipelineState();
++	CreateGBufferPipelineState();
+ 	CreateLightingPipelineStates();
+ 	CreatePostprocessingPipelineState();
+ 
+     ERR_CATCH_FUNC;
+ }
+ 
+-void Renderer::Create3DPipelineState()
++void Renderer::CreateGBufferPipelineState()
+ {
+     assert(m_ColorRenderTarget);
+ 
+@@ -794,7 +794,7 @@ void Renderer::Create3DPipelineState()
+             const bool backfaceCullingEnabled = g_BackFaceCullingMode.GetValue() > 0 && backfaceCullingVariant == 0;
+ 
+             Shader vs;
+-            vs.Init(ShaderType::Vertex, L"Data/ThreeD.hlsl", L"MainVS");
++            vs.Init(ShaderType::Vertex, L"Shaders/GBuffer.hlsl", L"MainVS");
+ 
+             const Shader* ps = m_GBufferMultiPixelShader->GetShader(macroValues);
+             CHECK_BOOL(ps);
+@@ -823,7 +823,7 @@ void Renderer::Create3DPipelineState()
+ 	        FillBlendDesc_NoBlending(desc.BlendState);
+             FillDepthStencilDesc_DepthTest(desc.DepthStencilState, D3D12_DEPTH_WRITE_MASK_ALL, D3D12_COMPARISON_FUNC_GREATER);
+ 	
+-            ComPtr<ID3D12PipelineState>& psoPtr = m_3DPipelineState[backfaceCullingVariant][alphaTestVariant];
++            ComPtr<ID3D12PipelineState>& psoPtr = m_GBufferPipelineState[backfaceCullingVariant][alphaTestVariant];
+             CHECK_HR(m_Device->CreateGraphicsPipelineState(&desc, __uuidof(ID3D12PipelineState), &psoPtr));
+             SetD3D12ObjectName(psoPtr, std::format(L"G-buffer pipeline state {}", variantDebugStr));
+ 
+@@ -844,8 +844,8 @@ void Renderer::CreateLightingPipelineStates()
+     // Ambient root signature
+     {
+         Shader vs, ps;
+-        vs.Init(ShaderType::Vertex, L"Data/Ambient.hlsl", L"FullScreenQuadVS");
+-        ps.Init(ShaderType::Pixel,  L"Data/Ambient.hlsl", L"MainPS");
++        vs.Init(ShaderType::Vertex, L"Shaders/Ambient.hlsl", L"FullScreenQuadVS");
++        ps.Init(ShaderType::Pixel,  L"Shaders/Ambient.hlsl", L"MainPS");
+ 
+ 	    D3D12_GRAPHICS_PIPELINE_STATE_DESC desc = {
+             .pRootSignature = m_StandardRootSignature->GetRootSignature(),
+@@ -873,8 +873,8 @@ void Renderer::CreateLightingPipelineStates()
+     // Lighting root signature
+     {
+         Shader vs, ps;
+-        vs.Init(ShaderType::Vertex, L"Data/Lighting.hlsl", L"FullScreenQuadVS");
+-        ps.Init(ShaderType::Pixel,  L"Data/Lighting.hlsl", L"MainPS");
++        vs.Init(ShaderType::Vertex, L"Shaders/Lighting.hlsl", L"FullScreenQuadVS");
++        ps.Init(ShaderType::Pixel,  L"Shaders/Lighting.hlsl", L"MainPS");
+ 
+ 	    D3D12_GRAPHICS_PIPELINE_STATE_DESC desc = {
+ 	        .pRootSignature = m_StandardRootSignature->GetRootSignature(),
+@@ -913,8 +913,8 @@ void Renderer::CreatePostprocessingPipelineState()
+     ERR_TRY
+ 
+     Shader vs, ps;
+-    vs.Init(ShaderType::Vertex, L"Data/Postprocessing.hlsl", L"FullScreenQuadVS");
+-    ps.Init(ShaderType::Pixel,  L"Data/Postprocessing.hlsl", L"MainPS");
++    vs.Init(ShaderType::Vertex, L"Shaders/Postprocessing.hlsl", L"FullScreenQuadVS");
++    ps.Init(ShaderType::Pixel,  L"Shaders/Postprocessing.hlsl", L"MainPS");
+ 
+ 	D3D12_GRAPHICS_PIPELINE_STATE_DESC desc = {
+ 	    .pRootSignature = m_StandardRootSignature->GetRootSignature(),
+@@ -1033,7 +1033,7 @@ void Renderer::ClearGBufferShader()
+     {
+         for(size_t j = 0; j < GBUFFER_SHADER_VARIANT_ALPHA_TEST_COUNT; ++j)
+         {
+-            m_3DPipelineState[i][j].Reset();
++            m_GBufferPipelineState[i][j].Reset();
+         }
+     }
+     m_GBufferMultiPixelShader->Clear();
+@@ -1418,7 +1418,7 @@ void Renderer::RenderEntityMesh(CommandList& cmdList, const Entity& entity, size
+     const size_t alphaTestVariant = (mat.m_Flags & SceneMaterial::FLAG_ALPHA_MASK) != 0 ?
+         GBUFFER_SHADER_VARIANT_ALPHA_TEST_ENABLED : 
+         GBUFFER_SHADER_VARIANT_ALPHA_TEST_DISABLED;
+-    ID3D12PipelineState* const pso = m_3DPipelineState[backfaceCullingVariant][alphaTestVariant].Get();
++    ID3D12PipelineState* const pso = m_GBufferPipelineState[backfaceCullingVariant][alphaTestVariant].Get();
+ 
+     if(!pso)
+         return;
+diff --git a/Source/Renderer.hpp b/Source/Renderer.hpp
+index f67a7bb..0e7e92d 100644
+--- a/Source/Renderer.hpp
++++ b/Source/Renderer.hpp
+@@ -197,7 +197,7 @@ private:
+         GBUFFER_SHADER_VARIANT_ALPHA_TEST_ENABLED,
+         GBUFFER_SHADER_VARIANT_ALPHA_TEST_COUNT
+     };
+-	ComPtr<ID3D12PipelineState> m_3DPipelineState[GBUFFER_SHADER_VARIANT_BACKFACE_CULLING_COUNT][GBUFFER_SHADER_VARIANT_ALPHA_TEST_COUNT];
++	ComPtr<ID3D12PipelineState> m_GBufferPipelineState[GBUFFER_SHADER_VARIANT_BACKFACE_CULLING_COUNT][GBUFFER_SHADER_VARIANT_ALPHA_TEST_COUNT];
+     
+     unique_ptr<AssimpInit> m_AssimpInit;
+     unique_ptr<FlyingCamera> m_Camera;
+@@ -245,7 +245,7 @@ private:
+ 	void CreateSwapChain();
+ 	void CreateFrameResources();
+ 	void CreateResources();
+-    void Create3DPipelineState();
++    void CreateGBufferPipelineState();
+     void CreateLightingPipelineStates();
+     void CreatePostprocessingPipelineState();
+     void CreateStandardTextures();
+diff --git a/WorkingDir/Data/Ambient.hlsl b/WorkingDir/Shaders/Ambient.hlsl
+similarity index 100%
+rename from WorkingDir/Data/Ambient.hlsl
+rename to WorkingDir/Shaders/Ambient.hlsl
+diff --git a/WorkingDir/Data/ThreeD.hlsl b/WorkingDir/Shaders/GBuffer.hlsl
+similarity index 100%
+rename from WorkingDir/Data/ThreeD.hlsl
+rename to WorkingDir/Shaders/GBuffer.hlsl
+diff --git a/WorkingDir/Data/Include/Common.hlsl b/WorkingDir/Shaders/Include/Common.hlsl
+similarity index 100%
+rename from WorkingDir/Data/Include/Common.hlsl
+rename to WorkingDir/Shaders/Include/Common.hlsl
+diff --git a/WorkingDir/Data/Include/LightingCommon.hlsl b/WorkingDir/Shaders/Include/LightingCommon.hlsl
+similarity index 100%
+rename from WorkingDir/Data/Include/LightingCommon.hlsl
+rename to WorkingDir/Shaders/Include/LightingCommon.hlsl
+diff --git a/WorkingDir/Data/Include/ShaderConstants.h b/WorkingDir/Shaders/Include/ShaderConstants.h
+similarity index 100%
+rename from WorkingDir/Data/Include/ShaderConstants.h
+rename to WorkingDir/Shaders/Include/ShaderConstants.h
+diff --git a/WorkingDir/Data/Lighting.hlsl b/WorkingDir/Shaders/Lighting.hlsl
+similarity index 100%
+rename from WorkingDir/Data/Lighting.hlsl
+rename to WorkingDir/Shaders/Lighting.hlsl
+diff --git a/WorkingDir/Data/Postprocessing.hlsl b/WorkingDir/Shaders/Postprocessing.hlsl
+similarity index 100%
+rename from WorkingDir/Data/Postprocessing.hlsl
+rename to WorkingDir/Shaders/Postprocessing.hlsl
+-- 
+2.55.0.windows.2
+

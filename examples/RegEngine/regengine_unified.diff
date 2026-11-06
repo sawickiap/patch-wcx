@@ -1,0 +1,2054 @@
+--- /dev/null
++++ Doc/Keyboard shortcuts.txt
+@@ -0,0 +1,2 @@
++ESC - exit the program
++Pause - pause/resume scene time
+--- Source/AssimpUtils.cpp
++++ Source/AssimpUtils.cpp
+@@ -356,6 +356,51 @@
+         AppendNodeInfo(out, indentLevel, node->mChildren[i]);
+ }
+ 
++const aiMaterialProperty* FindMaterialProperty(const aiMaterial* material, const str_view& key)
++{
++    for(uint32_t i = 0; i < material->mNumProperties; ++i)
++    {
++        const aiMaterialProperty* prop = material->mProperties[i];
++        if(str_view(prop->mKey.C_Str()) == key)
++            return prop;
++    }
++    return nullptr;
++}
++
++bool GetFloatMaterialProperty(float& out, const aiMaterial* material, const str_view& key)
++{
++    const aiMaterialProperty* prop = FindMaterialProperty(material, key);
++    if(!prop || prop->mType != aiPTI_Float || prop->mDataLength != sizeof(float))
++        return false;
++    out = *(const float*)prop->mData;
++    return true;
++}
++
++bool GetStringMaterialProperty(string& out, const aiMaterial* material, const str_view& key)
++{
++    const aiMaterialProperty* prop = FindMaterialProperty(material, key);
++    if(!prop)
++        return false;
++    if(prop->mType != aiPTI_String)
++        return false;
++    const aiString* s = (const aiString*)prop->mData;
++    out = string(s->data, s->length);
++    return true;
++}
++
++bool GetFixedBufferMaterialProperty(std::span<char> outBuf, const aiMaterial* material, const str_view& key)
++{
++    const aiMaterialProperty* prop = FindMaterialProperty(material, key);
++    if(!prop)
++        return false;
++    const size_t size = outBuf.size();
++    if(prop->mType != aiPTI_Buffer || prop->mDataLength != size)
++        return false;
++    if(size)
++        memcpy(outBuf.data(), prop->mData, size);
++    return true;
++}
++
+ void PrintAssimpSceneInfo(const aiScene* scene)
+ {
+     wstring out = std::format(L"Assimp scene: NumAnimations={}, NumCameras={}, NumLights={}, NumMaterials={}, NumMeshes={}, NumTextures={}\n",
+--- Source/AssimpUtils.hpp
++++ Source/AssimpUtils.hpp
+@@ -1,5 +1,16 @@
+ #pragma once
+ 
++struct aiMaterialProperty;
++struct aiMaterial;
+ struct aiScene;
+ 
++const aiMaterialProperty* FindMaterialProperty(const aiMaterial* material, const str_view& key);
++
++bool GetFloatMaterialProperty(float& out, const aiMaterial* material, const str_view& key);
++
++bool GetStringMaterialProperty(string& out, const aiMaterial* material, const str_view& key);
++
++// Property must be a buffer of the same size as outBuf.
++bool GetFixedBufferMaterialProperty(std::span<char> outBuf, const aiMaterial* material, const str_view& key);
++
+ void PrintAssimpSceneInfo(const aiScene* scene);
+--- Source/Game.cpp
++++ Source/Game.cpp
+@@ -5,12 +5,13 @@
+ #include "Cameras.hpp"
+ #include "Settings.hpp"
+ #include "ImGuiUtils.hpp"
+-#include "../WorkingDir/Data/Include/ShaderConstants.h"
++#include "../WorkingDir/Shaders/Include/ShaderConstants.h"
+ 
+ extern VecSetting<glm::uvec2> g_Size;
+ 
+ static VecSetting<vec2> g_FlyingCameraRotationSpeed(SettingCategory::Runtime, "FlyingCamera.RotationSpeed.RadiansPerPixel", vec2(-0.005, 0.005));
+ static FloatSetting g_FlyingCameraMovementSpeed(SettingCategory::Runtime, "FlyingCamera.MovementSpeed.UnitsPerSecond", 1.f);
++static FloatSetting g_SceneTimeSpeed(SettingCategory::Runtime, "SceneTimeSpeed", 1.f);
+ 
+ FrameTimeHistory::Entry FrameTimeHistory::Get(size_t i) const
+ {
+@@ -35,6 +36,7 @@
+ 
+ void Game::Init()
+ {
++    m_SceneTime.Start(g_App->GetTime().m_Time);
+ }
+ 
+ Game::~Game()
+@@ -44,7 +46,7 @@
+ 
+ void Game::Reload(bool refreshAll)
+ {
+-
++    m_SceneTime.Start(g_App->GetTime().m_Time);
+ }
+ 
+ void Game::Update()
+@@ -53,6 +55,21 @@
+ 
+     m_FrameTimeHistory.Post(appTime.m_DeltaTime_Float);
+ 
++    {
++        Time deltaTime = {0};
++        const float timeSpeed = std::max(0.f, g_SceneTimeSpeed.GetValue());
++        if(!m_TimePaused && timeSpeed > 0.f)
++        {
++            deltaTime = appTime.m_DeltaTime;
++            if(timeSpeed != 1.f)
++            {
++                const int64_t numerator = (int64_t)(timeSpeed * 1000.f + 0.5f);
++                deltaTime.m_Value = deltaTime.m_Value * numerator / 1000;
++            }
++        }
++        m_SceneTime.NewFrameFromDelta(deltaTime);
++    }
++
+     for(size_t li = 1; li < g_Renderer->m_Lights.size(); ++li)
+     {
+         Light& l = g_Renderer->m_Lights[li];
+@@ -92,8 +109,6 @@
+         cam->SetPosition(cam->GetPosition() + v);
+     }
+ 
+-    g_Renderer->m_NormalMappingEnabled = !ImGui::IsKeyDown(ImGuiKey_N);
+-
+     ImGui();
+ }
+ 
+@@ -126,6 +141,9 @@
+             if(g_Renderer->m_Lights.size() > 1)
+                 g_Renderer->m_Lights[2].m_Enabled = !g_Renderer->m_Lights[2].m_Enabled;
+             break;
++        case VK_PAUSE:
++            m_TimePaused = !m_TimePaused;
++            break;
+         }
+     }
+ }
+@@ -274,23 +292,27 @@
+     return vec4(colors[_countof(dts) - 1], 1.f);
+ }
+ 
++static string DurationToStr(Time duration)
++{
++    uint32_t msec = TimeToMilliseconds<uint32_t>(duration);
++    uint32_t sec = msec / 1000;
++    msec %= 1000;
++    uint32_t min = sec / 60;
++    sec %= 60;
++    uint32_t hr = min / 60;
++    min %= 60;
++    return std::format("{}:{:02}:{:02}:{:03}", hr, min, sec, msec);
++}
++
+ void Game::ShowStatisticsWindow()
+ {
+     const TimeData& appTime = g_App->GetTime();
+     
+-    uint32_t uptimeMsec = TimeToMilliseconds<uint32_t>(appTime.m_Time);
+-    uint32_t uptimeSec = uptimeMsec / 1000;
+-    uptimeMsec %= 1000;
+-    uint32_t uptimeMin = uptimeSec / 60;
+-    uptimeSec %= 60;
+-    uint32_t uptimeHr = uptimeMin / 60;
+-    uptimeMin %= 60;
+-
+     ImGui::Begin("Statistics", &m_StatisticsWindowVisible);
+     
+     ImGui::Text("FPS: %.1f", g_App->GetFPS());
+-    ImGui::Text("Uptime: %u:%02u:%02u:%03u", uptimeHr, uptimeMin, uptimeSec, uptimeMsec);
+-    ImGui::Text("Frame: %u", appTime.m_FrameIndex);
++    ImGui::Text("Application time: %s, frame: %u", DurationToStr(appTime.m_Time).c_str(), appTime.m_FrameIndex);
++    ImGui::Text("Scene time: %s, frame: %u", DurationToStr(m_SceneTime.m_Time).c_str(), m_SceneTime.m_FrameIndex);
+ 
+     if(ImGui::CollapsingHeader("Frame time graph"))
+         ShowFrameTimeGraph();
+--- Source/Game.hpp
++++ Source/Game.hpp
+@@ -78,6 +78,8 @@
+     ivec2 m_MouseDragPrevPos = ivec2(INT_MAX, INT_MAX);
+ 
+     FrameTimeHistory m_FrameTimeHistory;
++    TimeData m_SceneTime;
++    bool m_TimePaused = false;
+ 
+     void ImGui();
+     void ShowAboutWindow();
+--- Source/Main.cpp
++++ Source/Main.cpp
+@@ -549,7 +549,7 @@
+ void Application::LoopIteration()
+ {
+     const Time now = Now();
+-    m_Time.NewFrame(now);
++    m_Time.NewFrameFromNow(now);
+     m_FPSCalculator.NewFrame(m_Time);
+ 
+     m_ImGuiContext->NewFrame();
+--- Source/RegEngine.vcxproj
++++ Source/RegEngine.vcxproj
+@@ -173,7 +173,7 @@
+     <ClInclude Include="..\ThirdParty\imgui-1.87\misc\cpp\imgui_stdlib.h" />
+     <ClInclude Include="..\ThirdParty\str_view\str_view.hpp" />
+     <ClInclude Include="..\ThirdParty\WinFontRender\WinFontRender.h" />
+-    <ClInclude Include="..\WorkingDir\Data\Include\ShaderConstants.h" />
++    <ClInclude Include="..\WorkingDir\Shaders\Include\ShaderConstants.h" />
+     <ClInclude Include="AssimpUtils.hpp" />
+     <ClInclude Include="BaseUtils.hpp" />
+     <ClInclude Include="Cameras.hpp" />
+@@ -205,30 +205,22 @@
+     <None Include="packages.config" />
+   </ItemGroup>
+   <ItemGroup>
+-    <Text Include="..\WorkingDir\Data\Include\Common.hlsl">
++    <Text Include="..\WorkingDir\Shaders\Ambient.hlsl">
+       <FileType>Document</FileType>
+     </Text>
+-  </ItemGroup>
+-  <ItemGroup>
+-    <Text Include="..\WorkingDir\Data\Postprocessing.hlsl">
++    <Text Include="..\WorkingDir\Shaders\GBuffer.hlsl">
+       <FileType>Document</FileType>
+     </Text>
+-  </ItemGroup>
+-  <ItemGroup>
+-    <Text Include="..\WorkingDir\Data\Lighting.hlsl">
++    <Text Include="..\WorkingDir\Shaders\Include\Common.hlsl">
+       <FileType>Document</FileType>
+     </Text>
+-  </ItemGroup>
+-  <ItemGroup>
+-    <Text Include="..\WorkingDir\Data\Ambient.hlsl">
++    <Text Include="..\WorkingDir\Shaders\Include\LightingCommon.hlsl">
+       <FileType>Document</FileType>
+     </Text>
+-    <Text Include="..\WorkingDir\Data\Include\LightingCommon.hlsl">
++    <Text Include="..\WorkingDir\Shaders\Lighting.hlsl">
+       <FileType>Document</FileType>
+     </Text>
+-  </ItemGroup>
+-  <ItemGroup>
+-    <Text Include="..\WorkingDir\Data\ThreeD.hlsl">
++    <Text Include="..\WorkingDir\Shaders\Postprocessing.hlsl">
+       <FileType>Document</FileType>
+     </Text>
+   </ItemGroup>
+--- Source/RegEngine.vcxproj.filters
++++ Source/RegEngine.vcxproj.filters
+@@ -66,9 +66,6 @@
+     <Filter Include="ThirdParty\D3D12MemoryAllocator">
+       <UniqueIdentifier>{02e0fc4e-e869-458e-9d29-a6b8ba1d71a9}</UniqueIdentifier>
+     </Filter>
+-    <Filter Include="Shaders\Include">
+-      <UniqueIdentifier>{a89f3837-609c-4538-b9da-efd7d780a7ca}</UniqueIdentifier>
+-    </Filter>
+     <Filter Include="ConfigFiles">
+       <UniqueIdentifier>{8d665066-43b7-4386-919a-4684141589c2}</UniqueIdentifier>
+     </Filter>
+@@ -87,6 +84,9 @@
+     <Filter Include="ThirdParty\IconFontCppHeaders">
+       <UniqueIdentifier>{6c45d41f-0e07-4e15-85c6-cb73c78a67e6}</UniqueIdentifier>
+     </Filter>
++    <Filter Include="Shaders\Include">
++      <UniqueIdentifier>{7a8a7cec-acd8-4e57-9907-711b2a5f2e88}</UniqueIdentifier>
++    </Filter>
+   </ItemGroup>
+   <ItemGroup>
+     <ClInclude Include="..\ThirdParty\d3dx12\d3dx12.h">
+@@ -116,9 +116,6 @@
+     <ClInclude Include="Game.hpp" />
+     <ClInclude Include="Cameras.hpp" />
+     <ClInclude Include="Streams.hpp" />
+-    <ClInclude Include="..\WorkingDir\Data\Include\ShaderConstants.h">
+-      <Filter>Shaders\Include</Filter>
+-    </ClInclude>
+     <ClInclude Include="SmallFileCache.hpp" />
+     <ClInclude Include="Main.hpp" />
+     <ClInclude Include="..\ThirdParty\imgui-1.87\imconfig.h">
+@@ -153,6 +150,9 @@
+       <Filter>ThirdParty\IconFontCppHeaders</Filter>
+     </ClInclude>
+     <ClInclude Include="Time.hpp" />
++    <ClInclude Include="..\WorkingDir\Shaders\Include\ShaderConstants.h">
++      <Filter>Shaders\Include</Filter>
++    </ClInclude>
+   </ItemGroup>
+   <ItemGroup>
+     <Natvis Include="..\ThirdParty\str_view\str_view.natvis">
+@@ -173,22 +173,22 @@
+     </None>
+   </ItemGroup>
+   <ItemGroup>
+-    <Text Include="..\WorkingDir\Data\Include\Common.hlsl">
++    <Text Include="..\WorkingDir\Shaders\Include\Common.hlsl">
+       <Filter>Shaders\Include</Filter>
+     </Text>
+-    <Text Include="..\WorkingDir\Data\Postprocessing.hlsl">
+-      <Filter>Shaders</Filter>
++    <Text Include="..\WorkingDir\Shaders\Include\LightingCommon.hlsl">
++      <Filter>Shaders\Include</Filter>
+     </Text>
+-    <Text Include="..\WorkingDir\Data\Lighting.hlsl">
++    <Text Include="..\WorkingDir\Shaders\Ambient.hlsl">
+       <Filter>Shaders</Filter>
+     </Text>
+-    <Text Include="..\WorkingDir\Data\Ambient.hlsl">
++    <Text Include="..\WorkingDir\Shaders\GBuffer.hlsl">
+       <Filter>Shaders</Filter>
+     </Text>
+-    <Text Include="..\WorkingDir\Data\Include\LightingCommon.hlsl">
+-      <Filter>Shaders\Include</Filter>
++    <Text Include="..\WorkingDir\Shaders\Lighting.hlsl">
++      <Filter>Shaders</Filter>
+     </Text>
+-    <Text Include="..\WorkingDir\Data\ThreeD.hlsl">
++    <Text Include="..\WorkingDir\Shaders\Postprocessing.hlsl">
+       <Filter>Shaders</Filter>
+     </Text>
+   </ItemGroup>
+--- Source/Renderer.cpp
++++ Source/Renderer.cpp
+@@ -18,7 +18,7 @@
+ #include <assimp/DefaultLogger.hpp>
+ #include <assimp/vector2.h>
+ #include <assimp/vector3.h>
+-#include "../WorkingDir/Data/Include/ShaderConstants.h"
++#include "../WorkingDir/Shaders/Include/ShaderConstants.h"
+ #include "../ThirdParty/imgui-1.87/backends/imgui_impl_dx12.h"
+ 
+ static const D3D_FEATURE_LEVEL MY_D3D_FEATURE_LEVEL = D3D_FEATURE_LEVEL_12_0;
+@@ -82,6 +82,10 @@
+ static Vec3ColorSetting g_LightColor(SettingCategory::Load, "LightColor", vec3(0.9f));
+ static Vec3ColorSetting g_AmbientColor(SettingCategory::Load, "AmbientColor", vec3(0.1f));
+ 
++static BoolSetting g_AlbedoTexturesEnabled(SettingCategory::Volatile, "Renderer.Debug.AlbedoTextures.Enabled", true);
++static BoolSetting g_NormalMapsEnabled(SettingCategory::Volatile, "Renderer.Debug.NormalMaps.Enabled", true);
++static BoolSetting g_BackfaceCullingEnabled(SettingCategory::Volatile, "Renderer.Debug.BackfaceCulling.Enabled", true);
++
+ Renderer* g_Renderer;
+ 
+ #define HELPER_CAT_1(a, b) a ## b
+@@ -129,6 +133,13 @@
+     packed_mat4 m_WorldView;
+ };
+ 
++struct PerMaterialConstants
++{
++    uint32_t m_Flags;
++    float m_AlphaCutoff;
++    uint32_t _padding0[2];
++};
++
+ struct LightConstants
+ {
+     packed_vec3 m_Color;
+@@ -310,6 +321,13 @@
+     m_StandardSamplers.Init();
+     m_ShaderCompiler= std::make_unique<ShaderCompiler>();
+     m_ShaderCompiler->Init();
++
++    {
++        wstr_view MACRO_NAMES[] = { L"ALPHA_TEST" };
++        m_GBufferMultiPixelShader = std::make_unique<MultiShader>();
++        m_GBufferMultiPixelShader->Init(ShaderType::Pixel, L"Shaders/GBuffer.hlsl", L"MainPS", MACRO_NAMES);
++    }
++
+ 	CreateCommandQueues();
+ 	CreateSwapChain();
+ 	CreateFrameResources();
+@@ -354,10 +372,10 @@
+ 	m_CmdQueue->Signal(m_Fence.Get(), m_NextFenceValue);
+     WaitForFenceOnCPU(m_NextFenceValue++);
+     
+-    m_3DPipelineState.Reset();
++    ClearGBufferShader();
+     ClearModel();
+ 
+-    Create3DPipelineState();
++    CreateGBufferPipelineState();
+     CreatePostprocessingPipelineState();
+     CreateLightingPipelineStates();
+     LoadModel(refreshAll);
+@@ -466,7 +484,6 @@
+                 0, nullptr); // NumRects, pRects
+         }
+ 
+-        if(m_3DPipelineState)
+         {
+             PIX_EVENT_SCOPE(cmdList, L"3D");
+ 
+@@ -475,7 +492,6 @@
+                 {m_GBuffers[0].get(), m_GBuffers[1].get()});
+ 
+ 	        cmdList.SetRootSignature(m_StandardRootSignature->GetRootSignature());
+-            cmdList.SetPipelineState(m_3DPipelineState.Get());
+ 
+             cmdList.GetCmdList()->SetGraphicsRootDescriptorTable(
+                 m_StandardRootSignature->GetCBVParamIndex(0),
+@@ -750,55 +766,71 @@
+         m_GBuffers[i]->Init(resDesc, D3D12_RESOURCE_STATE_RENDER_TARGET, std::format(L"GBuffer {}", GBUFFER_NAMES[i]));
+     }
+ 
+-	Create3DPipelineState();
++	CreateGBufferPipelineState();
+ 	CreateLightingPipelineStates();
+ 	CreatePostprocessingPipelineState();
+ 
+     ERR_CATCH_FUNC;
+ }
+ 
+-void Renderer::Create3DPipelineState()
++void Renderer::CreateGBufferPipelineState()
+ {
+     assert(m_ColorRenderTarget);
+ 
+-    m_3DPipelineState.Reset();
++    ClearGBufferShader();
+ 
+-    ERR_TRY
+-    ERR_TRY
++    for(size_t backfaceCullingVariant = 0; backfaceCullingVariant < GBUFFER_SHADER_VARIANT_BACKFACE_CULLING_COUNT; ++backfaceCullingVariant)
++    {
++        for(size_t alphaTestVariant = 0; alphaTestVariant < GBUFFER_SHADER_VARIANT_ALPHA_TEST_COUNT; ++alphaTestVariant)
++        {
++            wstring variantDebugStr = std::format(L"{},{}", backfaceCullingVariant, alphaTestVariant);
+ 
+-    Shader vs, ps;
+-    vs.Init(ShaderType::Vertex, L"Data/ThreeD.hlsl", L"MainVS");
+-    ps.Init(ShaderType::Pixel,  L"Data/ThreeD.hlsl", L"MainPS");
++            ERR_TRY
++            ERR_TRY
+ 
+-	D3D12_GRAPHICS_PIPELINE_STATE_DESC desc = {
+-	    .pRootSignature = m_StandardRootSignature->GetRootSignature(),
+-	    .VS = {
+-            .pShaderBytecode = vs.GetCode().data(),
+-            .BytecodeLength = vs.GetCode().size()},
+-	    .PS = {
+-            .pShaderBytecode = ps.GetCode().data(),
+-            .BytecodeLength = ps.GetCode().size()},
+-        .SampleMask = UINT32_MAX,
+-	    .InputLayout = {
+-            .pInputElementDescs = Vertex::GetInputElements(),
+-            .NumElements = Vertex::GetInputElementCount()},
+-	    .PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
+-	    .NumRenderTargets = (UINT)GBuffer::Count,
+-	    .DSVFormat = DEPTH_STENCIL_FORMAT,
+-        .SampleDesc = {.Count = 1}};
+-    for(size_t i = 0; i < (size_t)GBuffer::Count; ++i)
+-	    desc.RTVFormats[i] = GBUFFER_FORMATS[i];
+-    FillRasterizerDesc(desc.RasterizerState,
+-        g_BackFaceCullingMode.GetValue() > 0 ? D3D12_CULL_MODE_BACK : D3D12_CULL_MODE_NONE,
+-        g_BackFaceCullingMode.GetValue() == 2 ? TRUE : FALSE);
+-	FillBlendDesc_NoBlending(desc.BlendState);
+-    FillDepthStencilDesc_DepthTest(desc.DepthStencilState, D3D12_DEPTH_WRITE_MASK_ALL, D3D12_COMPARISON_FUNC_GREATER);
++            const uint32_t macroValues[] = {
++                (uint32_t)alphaTestVariant }; // ALPHA_TEST
++
++            const bool backfaceCullingEnabled = g_BackFaceCullingMode.GetValue() > 0 && backfaceCullingVariant == 0;
++
++            Shader vs;
++            vs.Init(ShaderType::Vertex, L"Shaders/GBuffer.hlsl", L"MainVS");
++
++            const Shader* ps = m_GBufferMultiPixelShader->GetShader(macroValues);
++            CHECK_BOOL(ps);
++
++	        D3D12_GRAPHICS_PIPELINE_STATE_DESC desc = {
++	            .pRootSignature = m_StandardRootSignature->GetRootSignature(),
++	            .VS = {
++                    .pShaderBytecode = vs.GetCode().data(),
++                    .BytecodeLength = vs.GetCode().size()},
++	            .PS = {
++                    .pShaderBytecode = ps->GetCode().data(),
++                    .BytecodeLength = ps->GetCode().size()},
++                .SampleMask = UINT32_MAX,
++	            .InputLayout = {
++                    .pInputElementDescs = Vertex::GetInputElements(),
++                    .NumElements = Vertex::GetInputElementCount()},
++	            .PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
++	            .NumRenderTargets = (UINT)GBuffer::Count,
++	            .DSVFormat = DEPTH_STENCIL_FORMAT,
++                .SampleDesc = {.Count = 1}};
++            for(size_t i = 0; i < (size_t)GBuffer::Count; ++i)
++	            desc.RTVFormats[i] = GBUFFER_FORMATS[i];
++            FillRasterizerDesc(desc.RasterizerState,
++                backfaceCullingEnabled ? D3D12_CULL_MODE_BACK : D3D12_CULL_MODE_NONE,
++                g_BackFaceCullingMode.GetValue() == 2 ? TRUE : FALSE);
++	        FillBlendDesc_NoBlending(desc.BlendState);
++            FillDepthStencilDesc_DepthTest(desc.DepthStencilState, D3D12_DEPTH_WRITE_MASK_ALL, D3D12_COMPARISON_FUNC_GREATER);
+ 	
+-    CHECK_HR(m_Device->CreateGraphicsPipelineState(&desc, __uuidof(ID3D12PipelineState), &m_3DPipelineState));
+-    SetD3D12ObjectName(m_3DPipelineState, L"Test pipeline state");
++            ComPtr<ID3D12PipelineState>& psoPtr = m_GBufferPipelineState[backfaceCullingVariant][alphaTestVariant];
++            CHECK_HR(m_Device->CreateGraphicsPipelineState(&desc, __uuidof(ID3D12PipelineState), &psoPtr));
++            SetD3D12ObjectName(psoPtr, std::format(L"G-buffer pipeline state {}", variantDebugStr));
+ 
+-    ERR_CATCH_MSG(L"Cannot create pipeline state.");
+-    } CATCH_PRINT_ERROR(;);
++            ERR_CATCH_MSG(std::format(L"Cannot create G-buffer pipeline state {}.", variantDebugStr));
++            } CATCH_PRINT_ERROR(;);
++        }
++    }
+ }
+ 
+ void Renderer::CreateLightingPipelineStates()
+@@ -812,8 +844,8 @@
+     // Ambient root signature
+     {
+         Shader vs, ps;
+-        vs.Init(ShaderType::Vertex, L"Data/Ambient.hlsl", L"FullScreenQuadVS");
+-        ps.Init(ShaderType::Pixel,  L"Data/Ambient.hlsl", L"MainPS");
++        vs.Init(ShaderType::Vertex, L"Shaders/Ambient.hlsl", L"FullScreenQuadVS");
++        ps.Init(ShaderType::Pixel,  L"Shaders/Ambient.hlsl", L"MainPS");
+ 
+ 	    D3D12_GRAPHICS_PIPELINE_STATE_DESC desc = {
+             .pRootSignature = m_StandardRootSignature->GetRootSignature(),
+@@ -841,8 +873,8 @@
+     // Lighting root signature
+     {
+         Shader vs, ps;
+-        vs.Init(ShaderType::Vertex, L"Data/Lighting.hlsl", L"FullScreenQuadVS");
+-        ps.Init(ShaderType::Pixel,  L"Data/Lighting.hlsl", L"MainPS");
++        vs.Init(ShaderType::Vertex, L"Shaders/Lighting.hlsl", L"FullScreenQuadVS");
++        ps.Init(ShaderType::Pixel,  L"Shaders/Lighting.hlsl", L"MainPS");
+ 
+ 	    D3D12_GRAPHICS_PIPELINE_STATE_DESC desc = {
+ 	        .pRootSignature = m_StandardRootSignature->GetRootSignature(),
+@@ -881,8 +913,8 @@
+     ERR_TRY
+ 
+     Shader vs, ps;
+-    vs.Init(ShaderType::Vertex, L"Data/Postprocessing.hlsl", L"FullScreenQuadVS");
+-    ps.Init(ShaderType::Pixel,  L"Data/Postprocessing.hlsl", L"MainPS");
++    vs.Init(ShaderType::Vertex, L"Shaders/Postprocessing.hlsl", L"FullScreenQuadVS");
++    ps.Init(ShaderType::Pixel,  L"Shaders/Postprocessing.hlsl", L"MainPS");
+ 
+ 	D3D12_GRAPHICS_PIPELINE_STATE_DESC desc = {
+ 	    .pRootSignature = m_StandardRootSignature->GetRootSignature(),
+@@ -995,6 +1027,18 @@
+     m_RootEntity = Entity{};
+ }
+ 
++void Renderer::ClearGBufferShader()
++{
++    for(size_t i = 0; i < GBUFFER_SHADER_VARIANT_BACKFACE_CULLING_COUNT; ++i)
++    {
++        for(size_t j = 0; j < GBUFFER_SHADER_VARIANT_ALPHA_TEST_COUNT; ++j)
++        {
++            m_GBufferPipelineState[i][j].Reset();
++        }
++    }
++    m_GBufferMultiPixelShader->Clear();
++}
++
+ void Renderer::CreateLights()
+ {
+     Light dl = {
+@@ -1145,28 +1189,6 @@
+     m_Meshes.push_back(std::move(mesh));
+ }
+ 
+-const aiMaterialProperty* FindMaterialProperty(const aiMaterial* material, const str_view& key)
+-{
+-    for(uint32_t i = 0; i < material->mNumProperties; ++i)
+-    {
+-        const aiMaterialProperty* prop = material->mProperties[i];
+-        if(str_view(prop->mKey.C_Str()) == key)
+-            return prop;
+-    }
+-    return nullptr;
+-}
+-bool GetStringMaterialProperty(string& out, const aiMaterial* material, const str_view& key)
+-{
+-    const aiMaterialProperty* prop = FindMaterialProperty(material, key);
+-    if(!prop)
+-        return false;
+-    if(prop->mType != aiPTI_String)
+-        return false;
+-    const aiString* s = (const aiString*)prop->mData;
+-    out = string(s->data, s->length);
+-    return true;
+-}
+-
+ void Renderer::LoadMaterial(const std::filesystem::path& modelDir, const aiScene* scene, uint32_t materialIndex,
+     const aiMaterial* material, bool refreshAll)
+ {
+@@ -1226,9 +1248,44 @@
+     if(!normalPathP.empty() && !normalPathP.is_absolute())
+         normalPathP = modelDir / normalPathP;
+ 
++    // Twosided. Property found in Sponza scene, as 1-byte buffer = 0 or 1.
++    bool twoSided = false;
++    {
++        char buf;
++        if(GetFixedBufferMaterialProperty(std::span<char>(&buf, 1), material, "$mat.twosided"))
++            twoSided = (buf != 0);
++    }
++
++    // Alpha mask. Property found in Sponza scene, as strinrg = "MASK".
++    bool alphaMask = false;
++    {
++        string s;
++        if(GetStringMaterialProperty(s, material, "$mat.gltf.alphaMode"))
++        {
++            if(s == "MASK")
++                alphaMask = true;
++            else if(s != "OPAQUE")
++                LogWarningF(L"Unrecognized material property \"$mat.gltf.alphaMode\" value: {}", str_view(s));
++        }
++    }
++
++    // Alpha cutoff.
++    float alphaCutoff = 0.5f;
++    if(alphaMask)
++    {
++        float v;
++        if(GetFloatMaterialProperty(v, material, "$mat.gltf.alphaCutoff"))
++            alphaCutoff = v;
++    }
++
+     SceneMaterial sceneMat;
+     sceneMat.m_AlbedoTextureIndex = TryLoadTexture(albedoPathP, true, !refreshAll);
+     sceneMat.m_NormalTextureIndex = TryLoadTexture(normalPathP, false, !refreshAll);
++    if(twoSided)
++        sceneMat.m_Flags |= SceneMaterial::FLAG_TWOSIDED;
++    if(alphaMask)
++        sceneMat.m_Flags |= SceneMaterial::FLAG_ALPHA_MASK;
++    sceneMat.m_AlphaCutoff = alphaCutoff;
+     m_Materials.push_back(std::move(sceneMat));
+ 
+     ERR_CATCH_MSG(std::format(L"Cannot load material {}.", materialIndex));
+@@ -1355,7 +1412,41 @@
+     assert(materialIndex < m_Materials.size());
+     const SceneMaterial& mat = m_Materials[materialIndex];
+ 
+-    Texture* albedoTexture = mat.m_AlbedoTextureIndex != SIZE_MAX ?
++    const size_t backfaceCullingVariant = g_BackfaceCullingEnabled.GetValue() && (mat.m_Flags & SceneMaterial::FLAG_TWOSIDED) == 0 ?
++        GBUFFER_SHADER_VARIANT_BACKFACE_CULLING_DEFAULT :
++        GBUFFER_SHADER_VARIANT_BACKFACE_CULLING_TWOSIDED;
++    const size_t alphaTestVariant = (mat.m_Flags & SceneMaterial::FLAG_ALPHA_MASK) != 0 ?
++        GBUFFER_SHADER_VARIANT_ALPHA_TEST_ENABLED : 
++        GBUFFER_SHADER_VARIANT_ALPHA_TEST_DISABLED;
++    ID3D12PipelineState* const pso = m_GBufferPipelineState[backfaceCullingVariant][alphaTestVariant].Get();
++
++    if(!pso)
++        return;
++    cmdList.SetPipelineState(pso);
++
++    // Per material constant buffer
++    {
++        PerMaterialConstants perMaterialConstants = {};
++        perMaterialConstants.m_Flags = 0;
++        if((mat.m_Flags & SceneMaterial::FLAG_TWOSIDED) != 0)
++            perMaterialConstants.m_Flags |= MATERIAL_FLAG_TWOSIDED;
++        if((mat.m_Flags & SceneMaterial::FLAG_ALPHA_MASK) != 0)
++        {
++            perMaterialConstants.m_Flags |= MATERIAL_FLAG_ALPHA_MASK;
++            perMaterialConstants.m_AlphaCutoff = mat.m_AlphaCutoff;
++        }
++
++        void* perMaterialConstantsPtr = nullptr;
++        D3D12_GPU_DESCRIPTOR_HANDLE perMaterialConstantsDescriptorHandle;
++        m_TemporaryConstantBufferManager->CreateBuffer(sizeof(perMaterialConstants), perMaterialConstantsPtr, perMaterialConstantsDescriptorHandle);
++        memcpy(perMaterialConstantsPtr, &perMaterialConstants, sizeof(perMaterialConstants));
++
++        cmdList.GetCmdList()->SetGraphicsRootDescriptorTable(
++            m_StandardRootSignature->GetCBVParamIndex(2),
++            perMaterialConstantsDescriptorHandle);
++    }
++
++    Texture* albedoTexture = (mat.m_AlbedoTextureIndex != SIZE_MAX && g_AlbedoTexturesEnabled.GetValue()) ?
+         m_Textures[mat.m_AlbedoTextureIndex].m_Texture.get() : nullptr;
+     D3D12_GPU_DESCRIPTOR_HANDLE albedoTextureDescriptorHandle;
+     if(albedoTexture)
+@@ -1374,7 +1465,7 @@
+     Texture* normalTexture = mat.m_NormalTextureIndex != SIZE_MAX ?
+         m_Textures[mat.m_NormalTextureIndex].m_Texture.get() : nullptr;
+     D3D12_GPU_DESCRIPTOR_HANDLE normalTextureDescriptorHandle;
+-    if(normalTexture && m_NormalMappingEnabled)
++    if(normalTexture && g_NormalMapsEnabled.GetValue())
+     {
+         normalTextureDescriptorHandle = m_SRVDescriptorManager->GetGPUHandle(
+             m_Textures[mat.m_NormalTextureIndex].m_Texture->GetDescriptor());
+--- Source/Renderer.hpp
++++ Source/Renderer.hpp
+@@ -9,6 +9,8 @@
+ class Texture;
+ class Mesh;
+ class TemporaryConstantBufferManager;
++class Shader;
++class MultiShader;
+ class ShaderCompiler;
+ class OrbitingCamera;
+ class FlyingCamera;
+@@ -78,9 +80,9 @@
+ 
+ /*
+ It offers:
+-- CBV b0 ... b7, each separate DESCRIPTOR_TABLE, visible to ALL shader stages.
+-- SRV t0 ... t7, each separate DESCRIPTOR_TABLE, visible to PIXEL shader stage.
+-- Sampler s0 ... s3, each separate DESCRIPTOR_TABLE, visible to PIXEL shader stages.
++- CBV b0..b7, each separate DESCRIPTOR_TABLE, visible to ALL shader stages.
++- SRV t0..t7, each separate DESCRIPTOR_TABLE, visible to PIXEL shader stage.
++- Sampler s0..s3, each separate DESCRIPTOR_TABLE, visible to PIXEL shader stages.
+ 
+ Flags:
+ ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+@@ -113,7 +115,6 @@
+ {
+ public:
+     bool m_AmbientEnabled = false;
+-    bool m_NormalMappingEnabled = true;
+     std::vector<Light> m_Lights;
+ 
+ 	Renderer(IDXGIFactory4* dxgiFactory, IDXGIAdapter1* adapter, HWND wnd);
+@@ -182,7 +183,22 @@
+     unique_ptr<RenderingResource> m_GBuffers[(size_t)GBuffer::Count];
+     unique_ptr<RenderingResource> m_ColorRenderTarget;
+     unique_ptr<StandardRootSignature> m_StandardRootSignature;
+-	ComPtr<ID3D12PipelineState> m_3DPipelineState;
++    unique_ptr<MultiShader> m_GBufferMultiPixelShader;
++    
++    enum GBUFFER_SHADER_VARIANT_BACKFACE_CULLING
++    {
++        GBUFFER_SHADER_VARIANT_BACKFACE_CULLING_DEFAULT,
++        GBUFFER_SHADER_VARIANT_BACKFACE_CULLING_TWOSIDED,
++        GBUFFER_SHADER_VARIANT_BACKFACE_CULLING_COUNT,
++    };
++    enum GBUFFER_SHADER_VARIANT_ALPHA_TEST
++    {
++        GBUFFER_SHADER_VARIANT_ALPHA_TEST_DISABLED,
++        GBUFFER_SHADER_VARIANT_ALPHA_TEST_ENABLED,
++        GBUFFER_SHADER_VARIANT_ALPHA_TEST_COUNT
++    };
++	ComPtr<ID3D12PipelineState> m_GBufferPipelineState[GBUFFER_SHADER_VARIANT_BACKFACE_CULLING_COUNT][GBUFFER_SHADER_VARIANT_ALPHA_TEST_COUNT];
++    
+     unique_ptr<AssimpInit> m_AssimpInit;
+     unique_ptr<FlyingCamera> m_Camera;
+ 	ComPtr<ID3D12PipelineState> m_AmbientPipelineState;
+@@ -197,8 +213,18 @@
+     };
+     struct SceneMaterial
+     {
++        enum FLAG
++        {
++            FLAG_TWOSIDED = 0x1,
++            FLAG_ALPHA_MASK = 0x2,
++        };
++
++        uint32_t m_Flags = 0;
+         size_t m_AlbedoTextureIndex = SIZE_MAX;
+         size_t m_NormalTextureIndex = SIZE_MAX;
++        // Valid only when m_Flags & FLAG_ALPHA_MASK.
++        // Pixels with albedo.a < m_AlphaCutoff are discarded, according to GLTF specification.
++        float m_AlphaCutoff = 0.5f;
+     };
+     struct SceneTexture
+     {
+@@ -219,13 +245,14 @@
+ 	void CreateSwapChain();
+ 	void CreateFrameResources();
+ 	void CreateResources();
+-    void Create3DPipelineState();
++    void CreateGBufferPipelineState();
+     void CreateLightingPipelineStates();
+     void CreatePostprocessingPipelineState();
+     void CreateStandardTextures();
+     void InitImGui();
+     void ShutdownImGui();
+     void ClearModel();
++    void ClearGBufferShader();
+     void CreateLights();
+     void LoadModel(bool refreshAll);
+     void LoadModelNode(Entity& outEntity, const aiScene* scene, const aiNode* node);
+--- Source/Settings.cpp
++++ Source/Settings.cpp
+@@ -457,6 +457,9 @@
+         case SettingCategory::Runtime:
+             m_RuntimeSettings.Register(setting);
+             break;
++        case SettingCategory::Volatile:
++            m_VolatileSettings.Register(setting);
++            break;
+         default:
+             assert(0);
+         }
+@@ -472,6 +475,7 @@
+     SettingCollection m_StartupSettings;
+     SettingCollection m_LoadSettings;
+     SettingCollection m_RuntimeSettings;
++    SettingCollection m_VolatileSettings;
+     ImGuiTextFilter m_ImGuiFilter;
+ };
+ 
+@@ -599,7 +603,7 @@
+         if(ImGui::Button(ICON_FA_XMARK))
+             m_ImGuiFilter.Clear();
+ 
+-        if(ImGui::CollapsingHeader("StartupSettings"))
++        if(ImGui::CollapsingHeader("Startup settings"))
+         {
+             ImGui::TextColored(
+                 ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled),
+@@ -610,7 +614,7 @@
+             ImGui::EndDisabled();
+             ImGui::PopID();
+         }
+-        if(ImGui::CollapsingHeader("LoadSettings"))
++        if(ImGui::CollapsingHeader("Load settings"))
+         {
+             ImGui::TextColored(
+                 ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled),
+@@ -621,7 +625,7 @@
+             ImGui::EndDisabled();
+             ImGui::PopID();
+         }
+-        if(ImGui::CollapsingHeader("RuntimeSettings", ImGuiTreeNodeFlags_DefaultOpen))
++        if(ImGui::CollapsingHeader("Runtime settings", ImGuiTreeNodeFlags_DefaultOpen))
+         {
+             ImGui::TextColored(
+                 ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled),
+@@ -630,6 +634,15 @@
+             m_RuntimeSettings.ImGui(true, m_ImGuiFilter);
+             ImGui::PopID();
+         }
++        if(ImGui::CollapsingHeader("Volatile settings", ImGuiTreeNodeFlags_DefaultOpen))
++        {
++            ImGui::TextColored(
++                ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled),
++                "Initialized with default values at program startup, never loaded or saved to a file.");
++            ImGui::PushID("VolatileSettings");
++            m_VolatileSettings.ImGui(true, m_ImGuiFilter);
++            ImGui::PopID();
++        }
+     }
+     ImGui::End();
+ }
+--- Source/Settings.hpp
++++ Source/Settings.hpp
+@@ -12,6 +12,9 @@
+     // Can be changed during runtime, but some of them not always e.g.
+     // OK to change during Update and input handling but not during rendering.
+     Runtime,
++    // Initialized with default value on startup.
++    // Never loaded from file, never saved to file.
++    Volatile,
+     Count,
+ };
+ 
+--- Source/Shaders.cpp
++++ Source/Shaders.cpp
+@@ -5,12 +5,18 @@
+ #include "SmallFileCache.hpp"
+ #include "../ThirdParty/dxc_2021_12_08/inc/dxcapi.h"
+ #pragma comment(lib, "../ThirdParty/dxc_2021_12_08/lib/x64/dxcompiler.lib")
++#include <unordered_map>
+ 
+ static StringSequenceSetting g_ShadersExtraParameters(SettingCategory::Load, "Shaders.ExtraParameters");
+ static BoolSetting g_ShadersEmbedDebugInformation(SettingCategory::Load, "Shaders.EmbedDebugInformation", false);
+ 
+ static constexpr uint32_t CODE_PAGE = DXC_CP_UTF8;
+ 
++static const wchar_t* TYPE_NAMES[] = {
++    L"Vertex", L"Pixel", L"Compute"
++};
++static_assert(_countof(TYPE_NAMES) == (size_t)ShaderType::Count);
++
+ class IncludeHandler : public IDxcIncludeHandler
+ {
+ public:
+@@ -37,6 +43,37 @@
+     ComPtr<IDxcBlob> m_CompiledObject;
+ };
+ 
++class MultiShaderPimpl
++{
++public:
++    // it.second = null means shader compilation fails.
++    using MapType = std::unordered_map<size_t, unique_ptr<Shader>>;
++
++    ShaderType m_Type = ShaderType::Count;
++    wstring m_FilePath;
++    wstring m_EntryPointName;
++    std::vector<wstring> m_MacroNames;
++    std::vector<wstr_view> m_MacroNameViews;
++    MapType m_Shaders;
++
++    bool IsInitialized() const { return m_Type != ShaderType::Count && !m_FilePath.empty(); }
++    wstring MacrosToDebugStr(std::span<const uint32_t> macroValues) const;
++};
++
++wstring MultiShaderPimpl::MacrosToDebugStr(std::span<const uint32_t> macroValues) const
++{
++    wstring result;
++    const size_t count = m_MacroNames.size();
++    assert(count == macroValues.size());
++    for(size_t i = 0; i < count; ++i)
++    {
++        if(i > 0)
++            result += L' ';
++        result += std::format(L"{}={}", m_MacroNames[i], macroValues[i]);
++    }
++    return result;
++}
++
+ class ShaderCompilerPimpl
+ {
+ public:
+@@ -72,14 +109,25 @@
+ 
+ }
+ 
+-void Shader::Init(ShaderType type, const wstr_view& filePath, const wstr_view& entryPointName)
++void Shader::Init(ShaderType type, const wstr_view& filePath, const wstr_view& entryPointName,
++    std::span<const wstr_view> macroNames, std::span<const uint32_t> macroValues)
+ {
+     assert(g_Renderer && g_Renderer->GetShaderCompiler());
++    assert(macroNames.size() == macroValues.size());
+     ShaderCompilerPimpl* compiler = g_Renderer->GetShaderCompiler()->m_Pimpl.get();
+ 
+     ERR_TRY;
+ 
+-    LogMessageF(L"Compiling shader from \"{}\"...", filePath);
++    const size_t explicitMacroCount = macroNames.size();
++    if(explicitMacroCount == 0)
++        LogMessageF(L"Compiling {} shader from \"{}\"...", TYPE_NAMES[(size_t)type], filePath);
++    else
++    {
++        wstring explicitMacroDebugStr;
++        for(size_t i = 0; i < explicitMacroCount; ++i)
++            explicitMacroDebugStr += std::format(L" {}={}", macroNames[i], macroValues[i]);
++        LogMessageF(L"Compiling {} shader from \"{}\" with macros:{}...", TYPE_NAMES[(size_t)type], filePath, explicitMacroDebugStr);
++    }
+ 
+     std::filesystem::path dir = StrToPath(filePath);
+     dir = dir.parent_path();
+@@ -122,6 +170,12 @@
+         arguments.push_back(L"-Qembed_debug");
+     }
+ 
++    for(size_t i = 0; i < explicitMacroCount; ++i)
++    {
++        extraParamsUnicode.push_back(std::format(L"-D {}={}", macroNames[i], macroValues[i]));
++        arguments.push_back(extraParamsUnicode.back().c_str());
++    }
++
+     ComPtr<IDxcResult> result;
+     // This seems to always succeed. Real success is returned by IDxcOperationResult::GetStatus.
+     CHECK_HR(compiler->m_Compiler->Compile(
+@@ -165,6 +219,11 @@
+     ERR_CATCH_MSG(std::format(L"Cannot compile shader from \"{}\".", filePath));
+ }
+ 
++void Shader::Init(ShaderType type, const wstr_view& filePath, const wstr_view& entryPointName)
++{
++    Init(type, filePath, entryPointName, {}, {});
++}
++
+ bool Shader::IsNull() const
+ {
+     return !m_Pimpl->m_CompiledObject;
+@@ -178,6 +237,79 @@
+         m_Pimpl->m_CompiledObject->GetBufferSize());
+ }
+ 
++size_t MultiShader::HashMacroValues(std::span<const uint32_t> macroValues)
++{
++    size_t h = 0x262521a102765664llu;
++    for(auto val : macroValues)
++        h = CombineHash(h, val);
++    return h;
++}
++
++MultiShader::MultiShader() :
++    m_Pimpl(std::make_unique<MultiShaderPimpl>())
++{
++
++}
++
++MultiShader::~MultiShader()
++{
++
++}
++
++void MultiShader::Init(ShaderType type, const wstr_view& filePath, const wstr_view& entryPointName,
++    std::span<const wstr_view> macroNames)
++{
++    m_Pimpl->m_Type = type;
++    m_Pimpl->m_FilePath = filePath;
++    m_Pimpl->m_EntryPointName = entryPointName;
++
++    const size_t macroCount = macroNames.size();
++    m_Pimpl->m_MacroNames.resize(macroCount);
++    m_Pimpl->m_MacroNameViews.resize(macroCount);
++    for(size_t i = 0; i < macroCount; ++i)
++    {
++        m_Pimpl->m_MacroNames[i].assign(macroNames[i].data(), macroNames[i].length());
++        m_Pimpl->m_MacroNameViews[i] = wstr_view{m_Pimpl->m_MacroNames[i]};
++    }
++}
++
++void MultiShader::Clear()
++{
++    m_Pimpl->m_Shaders.clear();
++}
++
++const Shader* MultiShader::GetShader(std::span<const uint32_t> macroValues)
++{
++    assert(m_Pimpl->IsInitialized());
++    assert(macroValues.size() == m_Pimpl->m_MacroNames.size());
++    const size_t h = HashMacroValues(macroValues);
++    
++    const auto it = m_Pimpl->m_Shaders.find(h);
++    if(it != m_Pimpl->m_Shaders.end())
++        return it->second.get();
++    
++    try
++    {
++        ERR_TRY
++
++        unique_ptr<Shader> shader = std::make_unique<Shader>();
++        Shader* const shaderPtr = shader.get();
++        shader->Init(m_Pimpl->m_Type, m_Pimpl->m_FilePath, m_Pimpl->m_EntryPointName,
++            m_Pimpl->m_MacroNameViews, macroValues);
++        m_Pimpl->m_Shaders.insert({h, std::move(shader)});
++        return shaderPtr;
++
++        ERR_CATCH_MSG(std::format(L"Cannot compile multishader \"{}\" with macros: {}",
++            m_Pimpl->m_FilePath, m_Pimpl->MacrosToDebugStr(macroValues)));
++    }
++    catch(const Exception& ex)
++    {
++        ex.Print();
++        m_Pimpl->m_Shaders.insert({h, nullptr});
++        return nullptr;
++    }
++}
++
+ ShaderCompiler::ShaderCompiler() :
+     m_Pimpl(std::make_unique<ShaderCompilerPimpl>())
+ {
+--- Source/Shaders.hpp
++++ Source/Shaders.hpp
+@@ -6,6 +6,7 @@
+ };
+ 
+ class ShaderPimpl;
++class MultiShaderPimpl;
+ class ShaderCompilerPimpl;
+ 
+ class Shader
+@@ -13,6 +14,9 @@
+ public:
+     Shader();
+     ~Shader();
++    // On error: throws exception.
++    void Init(ShaderType type, const wstr_view& filePath, const wstr_view& entryPointName,
++        std::span<const wstr_view> macroNames, std::span<const uint32_t> macroValues);
+     void Init(ShaderType type, const wstr_view& filePath, const wstr_view& entryPointName);
+     bool IsNull() const;
+     std::span<const char> GetCode() const;
+@@ -21,6 +25,25 @@
+     unique_ptr<ShaderPimpl> m_Pimpl;
+ };
+ 
++class MultiShader
++{
++public:
++    static size_t HashMacroValues(std::span<const uint32_t> macroValues);
++
++    MultiShader();
++    ~MultiShader();
++    // Doesn't fail in this one.
++    void Init(ShaderType type, const wstr_view& filePath, const wstr_view& entryPointName,
++        std::span<const wstr_view> macroNames);
++    void Clear();
++    
++    // On error: prints error, returns null.
++    const Shader* GetShader(std::span<const uint32_t> macroValues);
++
++private:
++    unique_ptr<MultiShaderPimpl> m_Pimpl;
++};
++
+ class ShaderCompiler
+ {
+ public:
+--- Source/Time.cpp
++++ Source/Time.cpp
+@@ -102,15 +102,27 @@
+     m_AbsoluteStartTime = now;
+ }
+ 
+-void TimeData::NewFrame(Time now)
++void TimeData::NewFrameFromNow(Time now)
+ {
+-    assert(!m_AbsoluteStartTime.IsZero());
+     // Cannot be smaller than previous time.
+     Time newTime = std::max(now - m_AbsoluteStartTime, m_PreviousTime);
+     m_DeltaTime = newTime - m_Time;
+     m_PreviousTime = m_Time;
+     m_Time = newTime;
+     m_Time_Float = TimeToSeconds<float>(newTime);
++    m_DeltaTime_Float = TimeToSeconds<float>(m_DeltaTime);
++    ++m_FrameIndex;
++}
++
++void TimeData::NewFrameFromDelta(Time delta)
++{
++    // Cannot be smaller than previous time.
++    delta = std::max(delta, Time{0});
++    Time newTime = m_Time + delta;
++    m_DeltaTime = delta;
++    m_PreviousTime = m_Time;
++    m_Time = newTime;
++    m_Time_Float = TimeToSeconds<float>(newTime);
+     m_DeltaTime_Float = TimeToSeconds<float>(m_DeltaTime);
+     ++m_FrameIndex;
+ }
+--- Source/Time.hpp
++++ Source/Time.hpp
+@@ -38,25 +38,15 @@
+ // DeltaTime = time since previous frame.
+ struct TimeData
+ {
+-    Time m_AbsoluteStartTime = {};
+-    Time m_PreviousTime = {};
+-    Time m_Time = {};
+-    Time m_DeltaTime = {};
++    Time m_AbsoluteStartTime = {0};
++    Time m_PreviousTime = {0};
++    Time m_Time = {0};
++    Time m_DeltaTime = {0};
+     float m_Time_Float = 0.f;
+     float m_DeltaTime_Float = 0.f;
+     uint32_t m_FrameIndex = 0;
+ 
+     void Start(Time now);
+-    void NewFrame(Time now);
+-};
+-
+-struct AppTimeData
+-{
+-    // Relative to the app startup.
+-    // Always real time, never changing speed or pausing.
+-    // Use for UI animation or keyboard, mouse input handling.
+-    TimeData m_AppTime;
+-    // Relative to the scene loading.
+-    // Can stop or change speed. Use for game logic.
+-    TimeData m_SceneTime;
++    void NewFrameFromNow(Time now);
++    void NewFrameFromDelta(Time delta);
+ };
+--- WorkingDir/Data/Ambient.hlsl
++++ /dev/null
+@@ -1,14 +0,0 @@
+-#include "Include/Common.hlsl"
+-#include "Include/LightingCommon.hlsl"
+-
+-#if PIXEL_SHADER
+-
+-float4 MainPS(float4 pos : SV_Position) : SV_Target
+-{
+-	int3 loadPos = int3(pos.xy, 0);
+-	float3 albedo = GBufferAlbedo.Load(loadPos).rgb;
+-	float3 color = albedo * perFrameConstants.AmbientColor;
+-	return float4(color, 1.0);
+-}
+-
+-#endif
+--- WorkingDir/Data/Include/Common.hlsl
++++ /dev/null
+@@ -1,37 +0,0 @@
+-#define PI 3.14159265358979323846264338327950288
+-
+-struct PerFrameConstants
+-{
+-	uint FrameIndex;
+-	float SceneTime;
+-	float2 RenderResolution;
+-	
+-	float2 RenderResolutionInv;
+-	uint _padding0;
+-
+-	float4x4 Proj;
+-	float4x4 ProjInv;
+-
+-	float3 DirToLight_View; // Normalized
+-	uint _padding1;
+-
+-	float3 LightColor;
+-	uint _padding2;
+-
+-	float3 AmbientColor;
+-	uint _padding3;
+-};
+-ConstantBuffer<PerFrameConstants> perFrameConstants : register(b0);
+-
+-#ifdef VERTEX_SHADER
+-
+-float4 FullScreenQuadVS(uint vertexID : SV_VertexID) : SV_Position
+-{
+-	return float4(
+-		vertexID == 1 ? 3.0 : -1.0,
+-		vertexID == 2 ? 3.0 : -1.0,
+-		0.0,
+-		1.0);
+-}
+-
+-#endif // #ifdef VERTEX_SHADER
+--- WorkingDir/Data/Include/LightingCommon.hlsl
++++ /dev/null
+@@ -1,3 +0,0 @@
+-Texture2D<float> Depth : register(t0);
+-Texture2D<float4> GBufferAlbedo : register(t1);
+-Texture2D<float4> GBufferNormal : register(t2);
+--- WorkingDir/Data/Include/ShaderConstants.h
++++ /dev/null
+@@ -1,3 +0,0 @@
+-// Header file common for C++ and HLSL code.
+-
+-#define LIGHT_TYPE_DIRECTIONAL 1
+--- WorkingDir/Data/Lighting.hlsl
++++ /dev/null
+@@ -1,255 +0,0 @@
+-#include "Include/Common.hlsl"
+-#include "Include/LightingCommon.hlsl"
+-
+-#if PIXEL_SHADER
+-
+-struct Light
+-{
+-	float3 m_Color;
+-	uint m_Type; // Use LIGHT_TYPE_* from ShaderConstants.h
+-	
+-    // LIGHT_TYPE_DIRECTIONAL: direction to light (view space)
+-    // LIGHT_TYPE_POINT: position (view space)
+-	float3 m_DirectionToLight_Position;
+-	uint _padding0;
+-};
+-ConstantBuffer<Light> g_Light : register(b1);
+-
+-#if 0
+-// a = roughness
+-// H = half between normal and light
+-float DistributionGGX(float3 N, float3 H, float a)
+-{
+-    float a2     = a*a;
+-    float NdotH  = max(dot(N, H), 0.0);
+-    float NdotH2 = NdotH*NdotH;
+-	
+-    float nom    = a2;
+-    float denom  = (NdotH2 * (a2 - 1.0) + 1.0);
+-    denom        = PI * denom * denom;
+-	
+-    return nom / denom;
+-}
+-
+-float GeometrySchlickGGX(float NdotV, float k)
+-{
+-    float nom   = NdotV;
+-    float denom = NdotV * (1.0 - k) + k;
+-	
+-    return nom / denom;
+-}
+-  
+-float GeometrySmith(float3 N, float3 V, float3 L, float k)
+-{
+-    float NdotV = max(dot(N, V), 0.0);
+-    float NdotL = max(dot(N, L), 0.0);
+-    float ggx1 = GeometrySchlickGGX(NdotV, k);
+-    float ggx2 = GeometrySchlickGGX(NdotL, k);
+-	
+-    return ggx1 * ggx2;
+-}
+-
+-float3 fresnelSchlick(float cosTheta, float3 F0)
+-{
+-    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
+-}
+-#endif
+-
+-// https://www.unrealengine.com/en-US/blog/physically-based-shading-on-mobile
+-float3 EnvBRDFApprox(float3 specularColor, float roughness, float ndotv)
+-{
+-	const float4 c0 = float4(-1, -0.0275, -0.572, 0.022);
+-	const float4 c1 = float4(1, 0.0425, 1.04, -0.04);
+-	float4 r = roughness * c0 + c1;
+-	float a004 = min(r.x * r.x, exp2(-9.28 * ndotv)) * r.x + r.y;
+-	float2 AB = float2(-1.04, 1.04) * a004 + r.zw;
+-	return specularColor * AB.x + AB.y;
+-}
+-
+-// St. Peter's Basilica SH
+-// https://www.shadertoy.com/view/lt2GRD
+-struct SHCoefficients
+-{
+-	float3 l00, l1m1, l10, l11, l2m2, l2m1, l20, l21, l22;
+-};
+-
+-float3 EnvRemap(float3 c)
+-{
+-	return pow(2. * c, 2.2.xxx);
+-}
+-
+-float3 SHIrradiance(float3 nrm)
+-{
+-	const SHCoefficients SH_STPETER = {
+-		float3(0.3623915, 0.2624130, 0.2326261),
+-		float3(0.1759131, 0.1436266, 0.1260569),
+-		float3(-0.0247311, -0.0101254, -0.0010745),
+-		float3(0.0346500, 0.0223184, 0.0101350),
+-		float3(0.0198140, 0.0144073, 0.0043987),
+-		float3(-0.0469596, -0.0254485, -0.0117786),
+-		float3(-0.0898667, -0.0760911, -0.0740964),
+-		float3(0.0050194, 0.0038841, 0.0001374),
+-		float3(-0.0818750, -0.0321501, 0.0033399)
+-	};
+-	const SHCoefficients c = SH_STPETER;
+-	const float c1 = 0.429043;
+-	const float c2 = 0.511664;
+-	const float c3 = 0.743125;
+-	const float c4 = 0.886227;
+-	const float c5 = 0.247708;
+-	return (
+-		c1 * c.l22 * (nrm.x * nrm.x - nrm.y * nrm.y) +
+-		c3 * c.l20 * nrm.z * nrm.z +
+-		c4 * c.l00 -
+-		c5 * c.l20 +
+-		2.0 * c1 * c.l2m2 * nrm.x * nrm.y +
+-		2.0 * c1 * c.l21  * nrm.x * nrm.z +
+-		2.0 * c1 * c.l2m1 * nrm.y * nrm.z +
+-		2.0 * c2 * c.l11  * nrm.x +
+-		2.0 * c2 * c.l1m1 * nrm.y +
+-		2.0 * c2 * c.l10  * nrm.z
+-		).xxx;
+-}
+-
+-float VisibilityTerm(float roughness, float ndotv, float ndotl)
+-{
+-	float r2 = roughness * roughness;
+-	float gv = ndotl * sqrt(ndotv * (ndotv - ndotv * r2) + r2);
+-	float gl = ndotv * sqrt(ndotl * (ndotl - ndotl * r2) + r2);
+-	return 0.5 / max(gv + gl, 0.00001);
+-}
+-
+-float DistributionTerm(float roughness, float ndoth)
+-{
+-	float r2 = roughness * roughness;
+-	float d = (ndoth * r2 - ndoth) * ndoth + 1.0;
+-	return r2 / (d * d * PI);
+-}
+-
+-float3 FresnelTerm(float3 specularColor, float vdoth)
+-{
+-	float3 fresnel = specularColor + (1. - specularColor) * pow((1. - vdoth), 5.);
+-	return fresnel;
+-}
+-
+-float4 MainPS(float4 pos : SV_Position) : SV_Target
+-{
+-	int3 loadPos = int3(pos.xy, 0);
+-	float depth = Depth.Load(loadPos).r;
+-	float3 albedo = GBufferAlbedo.Load(loadPos).rgb;
+-	float3 normal_View = normalize(GBufferNormal.Load(loadPos).rgb);
+-	
+-	float3 pos_Clip;
+-	pos_Clip.x = pos.x * perFrameConstants.RenderResolutionInv.x * 2. - 1.;
+-	pos_Clip.y = 1. - pos.y * perFrameConstants.RenderResolutionInv.y * 2.;
+-	pos_Clip.z = depth;
+-	float4 pos_ViewHomo = mul(perFrameConstants.ProjInv, float4(pos_Clip, 1.0));
+-	float3 pos_View = pos_ViewHomo.xyz / pos_ViewHomo.w;
+-	
+-	float3 dirToLight = g_Light.m_DirectionToLight_Position;
+-	float diffuseTerm = max(0.0, dot(normal_View, dirToLight));
+-	float3 reflected_View = reflect(-perFrameConstants.DirToLight_View, normal_View);
+-	float3 dirToCam_View = normalize(-pos_View);
+-	float specularTerm = pow(max(0.0, dot(dirToCam_View, reflected_View)), 15.0);
+-	
+-	//float3 color = g_Light.m_Color * diffuseTerm * (albedo + specularTerm);
+-	float3 color = g_Light.m_Color * diffuseTerm * (lerp(albedo, float3(1.0,1.0,1.0), specularTerm));
+-
+-	// TEMP
+-	float3 l = normalize(dirToLight);
+-	float3 v = normalize(dirToCam_View);
+-	float3 n = normal_View;
+-	float3 h = normalize(l + n);
+-	// Fresnel term / specular color
+-	//const float3 F0 = float3(0.955, 0.638, 0.538);// Copper
+-	//const float3 F0 = float3(0.040, 0.040, 0.040);// Plastic
+-	const float3 F0 = albedo;
+-	const float roughness = 0.05;
+-	float isMetal = 0.;
+-	
+-#if 0
+-	float3 F_Schlick = F0 + (float3(1.0, 1.0, 1.0) - F0) * pow(1.0 - dot(n, l), 5.0);
+-
+-	color = F_Schlick / 20.0;
+-	//color = h * 0.5 + 0.5;
+-#endif
+-
+-#if 0
+-	float3 fLambert = albedo / PI;
+-	float D = DistributionGGX(n, h, roughness);
+-	float k_Direct = (roughness + 1.0) * (roughness + 1.0) / 8.0;
+-	float G = GeometrySmith(n, v, l, k_Direct);
+-	float3 F = fresnelSchlick(dot(n, h), F0);
+-	float3 kS = F; //specular
+-	float3 kD = 1.0.xxx - kS;//diffuse
+-	//float3 fCookTorrance = 1.0;
+-	//color = diffuseTerm * (kD * fLambert + kS * fCookTorrance);
+-	//color = F;
+-	color = ( kD * fLambert + D*F*G/( 4.0*dot(l,n)*dot(v,n) ) ) * g_Light.m_Color * max(0.0, dot(normal_View, dirToLight));
+-	//color = kS;
+-#endif
+-
+-	float3 baseColor = albedo;
+-	float3 diffuseColor = isMetal == 1. ? 0.0.xxx : baseColor;
+-	float3 specularColor = isMetal == 1. ? baseColor : 0.02.xxx;
+-	float roughnessE = roughness * roughness;
+-	float roughnessL = max(.01, roughnessE);
+-
+-	float3 refl = reflect(-dirToCam_View, normal_View);
+-	float3 diffuse = {0.,0.,0,};
+-	float3 specular = {0.,0.,0,};
+-
+-	float3 halfVec = normalize(dirToCam_View + dirToLight);
+-	float vdoth = saturate(dot(dirToCam_View, halfVec));
+-	float ndoth = saturate(dot(normal_View, halfVec));
+-	float ndotv = saturate(dot(normal_View, dirToCam_View));
+-	float ndotl = saturate(dot(normal_View, dirToLight));
+-	float3 envSpecularColor = EnvBRDFApprox(specularColor, roughnessE, ndotv);
+-
+-	float3 env1 = EnvRemap(float3(0.4, 0.4, 0.4));//texture(iChannel2, refl).xyz);
+-	float3 env2 = EnvRemap(float3(0.4, 0.4, 0.4));//texture(iChannel1, refl).xyz);
+-	float3 env3 = EnvRemap(float3(0.4, 0.4, 0.4));//SHIrradiance(refl));
+-	float3 env = lerp(env1, env2, saturate(roughnessE * 4.));
+-	env = lerp(env, env3, saturate((roughnessE - 0.25) / 0.75));
+-
+-	diffuse += diffuseColor * EnvRemap(SHIrradiance(normal_View));
+-	specular += envSpecularColor * env;
+-
+-	diffuse += diffuseColor * g_Light.m_Color * saturate(dot(normal_View, dirToLight));
+-
+-	float3 lightF = FresnelTerm(specularColor, vdoth);
+-	float lightD = DistributionTerm(roughnessL, ndoth);
+-	float lightV = VisibilityTerm(roughnessL, ndotv, ndotl);
+-	specular += g_Light.m_Color * lightF * (lightD * lightV * PI * ndotl);
+-
+-	float ao = 1.;//SceneAO(pos, normal_View, localToWorld);
+-	diffuse *= ao;
+-	specular *= saturate(pow(ndotv + ao, roughnessE) - 1. + ao);
+-
+-	color = diffuse + specular;
+-	if (false)
+-	{
+-		color = diffuse;
+-	}
+-	if (false)
+-	{
+-		color = specular;
+-	}
+-	if (false)
+-	{
+-		color = lightD.xxx;
+-	}
+-	if (false)
+-	{
+-		color = envSpecularColor;
+-	}
+-	if (false)
+-	{
+-		color = lightV.xxx * (4.0f * ndotv * ndotl);
+-	}
+-	color = color * .4;
+-
+-	return float4(color, 1.0);
+-}
+-
+-#endif
+--- WorkingDir/Data/Postprocessing.hlsl
++++ /dev/null
+@@ -1,17 +0,0 @@
+-#include "Include/Common.hlsl"
+-
+-#if PIXEL_SHADER
+-
+-Texture2D<float4> t : register(t0);
+-
+-float4 MainPS(float4 pos : SV_Position) : SV_Target
+-{
+-	float3 res = t.Load(int3(pos.xy, 0)).rgb;
+-	
+-	float gammaInv = 1/2.2;
+-	res = pow(res, gammaInv);
+-
+-	return float4(res, 1);
+-}
+-
+-#endif
+--- WorkingDir/Data/ThreeD.hlsl
++++ /dev/null
+@@ -1,77 +0,0 @@
+-#include "Include/Common.hlsl"
+-
+-struct PerObjectConstants
+-{
+-	float4x4 WorldViewProj;
+-	float4x4 WorldView;
+-};
+-ConstantBuffer<PerObjectConstants> perObjectConstants : register(b1);
+-
+-struct VS_INPUT
+-{
+-	float3 pos_Local : POSITION;
+-	float3 normal_Local : NORMAL;
+-	float3 tangent_Local : TANGENT;
+-	float3 bitangent_Local : BITANGENT;
+-	float2 texCoord : TEXCOORD;
+-	float4 color : COLOR;
+-};
+-
+-struct VS_OUTPUT
+-{
+-	float4 pos_Clip : SV_POSITION;
+-	float3 normal_Local : NORMAL;
+-	float3 tangent_Local : TANGENT;
+-	float3 bitangent_Local : BITANGENT;
+-	float2 texCoord : TEXCOORD;
+-};
+-
+-////////////////////////////////////////////////////////////////////////////////
+-#if VERTEX_SHADER
+-
+-VS_OUTPUT MainVS(VS_INPUT input)
+-{
+-	VS_OUTPUT output;
+-	output.pos_Clip = mul(perObjectConstants.WorldViewProj, float4(input.pos_Local, 1.0));
+-	//output.normal_View = mul((float3x3)perObjectConstants.WorldView, input.normal_Local);
+-	output.normal_Local = input.normal_Local;
+-	output.tangent_Local = input.tangent_Local;
+-	output.bitangent_Local = input.bitangent_Local;
+-	output.texCoord = input.texCoord;
+-	return output;
+-}
+-
+-////////////////////////////////////////////////////////////////////////////////
+-#elif PIXEL_SHADER
+-
+-Texture2D<float4> albedoTexture : register(t0);
+-Texture2D<float4> normalTexture : register(t1);
+-SamplerState s : register(s0);
+-
+-void MainPS(
+-	VS_OUTPUT input,
+-	out float4 outAlbedo : SV_Target0,
+-	out float4 outNormal_View : SV_Target1)
+-{
+-	outAlbedo.rgb = albedoTexture.Sample(s, input.texCoord).rgb;
+-	outAlbedo.a = 1.0;
+-
+-	float3 normal_Tangent = normalTexture.Sample(s, input.texCoord).rgb * 2.0 - 1.0;
+-	// TODO check which normalize() are required and which are not.
+-	normal_Tangent = normalize(normal_Tangent);
+-	float3x3 TBN = float3x3(
+-		normalize(input.tangent_Local),
+-		normalize(input.bitangent_Local),
+-		normalize(input.normal_Local));
+-	float3 normal_Local = mul(normal_Tangent, TBN);
+-	float3 normal_View = mul((float3x3)perObjectConstants.WorldView, normal_Local);
+-	normal_View = normalize(normal_View);
+-
+-	//TEMP
+-	//normal_View = mul((float3x3)perObjectConstants.WorldView, input.normal_Local);
+-
+-	outNormal_View.rgb = normalize(normal_View);
+-	outNormal_View.a = 1.0;
+-}
+-
+-#endif
+--- WorkingDir/RuntimeSettings.json
++++ WorkingDir/RuntimeSettings.json
+@@ -5,6 +5,7 @@
+         0.004999999888241291
+     ],
+     "FlyingCamera.MovementSpeed.UnitsPerSecond": 2.0,
++    "SceneTimeSpeed": 1.0,
+     "FrameRandomSleep": [
+         0,
+         0
+--- /dev/null
++++ WorkingDir/Shaders/Ambient.hlsl
+@@ -0,0 +1,14 @@
++#include "Include/Common.hlsl"
++#include "Include/LightingCommon.hlsl"
++
++#if PIXEL_SHADER
++
++float4 MainPS(float4 pos : SV_Position) : SV_Target
++{
++	int3 loadPos = int3(pos.xy, 0);
++	float3 albedo = GBufferAlbedo.Load(loadPos).rgb;
++	float3 color = albedo * perFrameConstants.AmbientColor;
++	return float4(color, 1.0);
++}
++
++#endif
+--- /dev/null
++++ WorkingDir/Shaders/GBuffer.hlsl
+@@ -0,0 +1,96 @@
++#include "Include/Common.hlsl"
++
++/*
++Macros:
++ALPHA_TEST = 0, 1
++*/
++
++struct PerObjectConstants
++{
++	float4x4 WorldViewProj;
++	float4x4 WorldView;
++};
++ConstantBuffer<PerObjectConstants> perObjectConstants : register(b1);
++
++struct PerMaterialConstants
++{
++	uint Flags; // Use MATERIAL_FLAG_*
++	float AlphaCutoff; // Valid only when (Flags & MATERIAL_FLAG_ALPHA_MASK)
++	uint2 _padding0;
++};
++ConstantBuffer<PerMaterialConstants> perMaterialConstants : register(b2);
++
++struct VS_INPUT
++{
++	float3 pos_Local : POSITION;
++	float3 normal_Local : NORMAL;
++	float3 tangent_Local : TANGENT;
++	float3 bitangent_Local : BITANGENT;
++	float2 texCoord : TEXCOORD;
++	float4 color : COLOR;
++};
++
++struct VS_OUTPUT
++{
++	float4 pos_Clip : SV_POSITION;
++	float3 normal_Local : NORMAL;
++	float3 tangent_Local : TANGENT;
++	float3 bitangent_Local : BITANGENT;
++	float2 texCoord : TEXCOORD;
++};
++
++////////////////////////////////////////////////////////////////////////////////
++#if VERTEX_SHADER
++
++VS_OUTPUT MainVS(VS_INPUT input)
++{
++	VS_OUTPUT output;
++	output.pos_Clip = mul(perObjectConstants.WorldViewProj, float4(input.pos_Local, 1.0));
++	//output.normal_View = mul((float3x3)perObjectConstants.WorldView, input.normal_Local);
++	output.normal_Local = input.normal_Local;
++	output.tangent_Local = input.tangent_Local;
++	output.bitangent_Local = input.bitangent_Local;
++	output.texCoord = input.texCoord;
++	return output;
++}
++
++////////////////////////////////////////////////////////////////////////////////
++#elif PIXEL_SHADER
++
++Texture2D<float4> albedoTexture : register(t0);
++Texture2D<float4> normalTexture : register(t1);
++SamplerState s : register(s0);
++
++void MainPS(
++	VS_OUTPUT input,
++	out float4 outAlbedo : SV_Target0,
++	out float4 outNormal_View : SV_Target1)
++{
++	float4 albedoSample = albedoTexture.Sample(s, input.texCoord);
++
++#if ALPHA_TEST
++	clip(albedoSample.a - perMaterialConstants.AlphaCutoff);
++#endif
++
++	outAlbedo.rgb = albedoSample.rgb;
++	outAlbedo.a = 1.0;
++
++	float3 normal_Tangent = normalTexture.Sample(s, input.texCoord).rgb * 2.0 - 1.0;
++	// TODO check which normalize() are required and which are not.
++	normal_Tangent = normalize(normal_Tangent);
++	float3x3 TBN = float3x3(
++		normalize(input.tangent_Local),
++		normalize(input.bitangent_Local),
++		normalize(input.normal_Local));
++	float3 normal_Local = mul(normal_Tangent, TBN);
++	float3 normal_View = mul((float3x3)perObjectConstants.WorldView, normal_Local);
++	normal_View = normalize(normal_View);
++
++	//TEMP
++	//normal_View = mul((float3x3)perObjectConstants.WorldView, input.normal_Local);
++
++	outNormal_View.rgb = normalize(normal_View);
++	outNormal_View.a = 1.0;
++}
++
++#endif
+--- /dev/null
++++ WorkingDir/Shaders/Include/Common.hlsl
+@@ -0,0 +1,37 @@
++#define PI 3.14159265358979323846264338327950288
++
++struct PerFrameConstants
++{
++	uint FrameIndex;
++	float SceneTime;
++	float2 RenderResolution;
++	
++	float2 RenderResolutionInv;
++	uint _padding0;
++
++	float4x4 Proj;
++	float4x4 ProjInv;
++
++	float3 DirToLight_View; // Normalized
++	uint _padding1;
++
++	float3 LightColor;
++	uint _padding2;
++
++	float3 AmbientColor;
++	uint _padding3;
++};
++ConstantBuffer<PerFrameConstants> perFrameConstants : register(b0);
++
++#ifdef VERTEX_SHADER
++
++float4 FullScreenQuadVS(uint vertexID : SV_VertexID) : SV_Position
++{
++	return float4(
++		vertexID == 1 ? 3.0 : -1.0,
++		vertexID == 2 ? 3.0 : -1.0,
++		0.0,
++		1.0);
++}
++
++#endif // #ifdef VERTEX_SHADER
+--- /dev/null
++++ WorkingDir/Shaders/Include/LightingCommon.hlsl
+@@ -0,0 +1,3 @@
++Texture2D<float> Depth : register(t0);
++Texture2D<float4> GBufferAlbedo : register(t1);
++Texture2D<float4> GBufferNormal : register(t2);
+--- /dev/null
++++ WorkingDir/Shaders/Include/ShaderConstants.h
+@@ -0,0 +1,6 @@
++// Header file common for C++ and HLSL code.
++
++#define LIGHT_TYPE_DIRECTIONAL 1
++
++#define MATERIAL_FLAG_TWOSIDED 0x1
++#define MATERIAL_FLAG_ALPHA_MASK 0x2
+--- /dev/null
++++ WorkingDir/Shaders/Lighting.hlsl
+@@ -0,0 +1,255 @@
++#include "Include/Common.hlsl"
++#include "Include/LightingCommon.hlsl"
++
++#if PIXEL_SHADER
++
++struct Light
++{
++	float3 m_Color;
++	uint m_Type; // Use LIGHT_TYPE_* from ShaderConstants.h
++	
++    // LIGHT_TYPE_DIRECTIONAL: direction to light (view space)
++    // LIGHT_TYPE_POINT: position (view space)
++	float3 m_DirectionToLight_Position;
++	uint _padding0;
++};
++ConstantBuffer<Light> g_Light : register(b1);
++
++#if 0
++// a = roughness
++// H = half between normal and light
++float DistributionGGX(float3 N, float3 H, float a)
++{
++    float a2     = a*a;
++    float NdotH  = max(dot(N, H), 0.0);
++    float NdotH2 = NdotH*NdotH;
++	
++    float nom    = a2;
++    float denom  = (NdotH2 * (a2 - 1.0) + 1.0);
++    denom        = PI * denom * denom;
++	
++    return nom / denom;
++}
++
++float GeometrySchlickGGX(float NdotV, float k)
++{
++    float nom   = NdotV;
++    float denom = NdotV * (1.0 - k) + k;
++	
++    return nom / denom;
++}
++  
++float GeometrySmith(float3 N, float3 V, float3 L, float k)
++{
++    float NdotV = max(dot(N, V), 0.0);
++    float NdotL = max(dot(N, L), 0.0);
++    float ggx1 = GeometrySchlickGGX(NdotV, k);
++    float ggx2 = GeometrySchlickGGX(NdotL, k);
++	
++    return ggx1 * ggx2;
++}
++
++float3 fresnelSchlick(float cosTheta, float3 F0)
++{
++    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
++}
++#endif
++
++// https://www.unrealengine.com/en-US/blog/physically-based-shading-on-mobile
++float3 EnvBRDFApprox(float3 specularColor, float roughness, float ndotv)
++{
++	const float4 c0 = float4(-1, -0.0275, -0.572, 0.022);
++	const float4 c1 = float4(1, 0.0425, 1.04, -0.04);
++	float4 r = roughness * c0 + c1;
++	float a004 = min(r.x * r.x, exp2(-9.28 * ndotv)) * r.x + r.y;
++	float2 AB = float2(-1.04, 1.04) * a004 + r.zw;
++	return specularColor * AB.x + AB.y;
++}
++
++// St. Peter's Basilica SH
++// https://www.shadertoy.com/view/lt2GRD
++struct SHCoefficients
++{
++	float3 l00, l1m1, l10, l11, l2m2, l2m1, l20, l21, l22;
++};
++
++float3 EnvRemap(float3 c)
++{
++	return pow(2. * c, 2.2.xxx);
++}
++
++float3 SHIrradiance(float3 nrm)
++{
++	const SHCoefficients SH_STPETER = {
++		float3(0.3623915, 0.2624130, 0.2326261),
++		float3(0.1759131, 0.1436266, 0.1260569),
++		float3(-0.0247311, -0.0101254, -0.0010745),
++		float3(0.0346500, 0.0223184, 0.0101350),
++		float3(0.0198140, 0.0144073, 0.0043987),
++		float3(-0.0469596, -0.0254485, -0.0117786),
++		float3(-0.0898667, -0.0760911, -0.0740964),
++		float3(0.0050194, 0.0038841, 0.0001374),
++		float3(-0.0818750, -0.0321501, 0.0033399)
++	};
++	const SHCoefficients c = SH_STPETER;
++	const float c1 = 0.429043;
++	const float c2 = 0.511664;
++	const float c3 = 0.743125;
++	const float c4 = 0.886227;
++	const float c5 = 0.247708;
++	return (
++		c1 * c.l22 * (nrm.x * nrm.x - nrm.y * nrm.y) +
++		c3 * c.l20 * nrm.z * nrm.z +
++		c4 * c.l00 -
++		c5 * c.l20 +
++		2.0 * c1 * c.l2m2 * nrm.x * nrm.y +
++		2.0 * c1 * c.l21  * nrm.x * nrm.z +
++		2.0 * c1 * c.l2m1 * nrm.y * nrm.z +
++		2.0 * c2 * c.l11  * nrm.x +
++		2.0 * c2 * c.l1m1 * nrm.y +
++		2.0 * c2 * c.l10  * nrm.z
++		).xxx;
++}
++
++float VisibilityTerm(float roughness, float ndotv, float ndotl)
++{
++	float r2 = roughness * roughness;
++	float gv = ndotl * sqrt(ndotv * (ndotv - ndotv * r2) + r2);
++	float gl = ndotv * sqrt(ndotl * (ndotl - ndotl * r2) + r2);
++	return 0.5 / max(gv + gl, 0.00001);
++}
++
++float DistributionTerm(float roughness, float ndoth)
++{
++	float r2 = roughness * roughness;
++	float d = (ndoth * r2 - ndoth) * ndoth + 1.0;
++	return r2 / (d * d * PI);
++}
++
++float3 FresnelTerm(float3 specularColor, float vdoth)
++{
++	float3 fresnel = specularColor + (1. - specularColor) * pow((1. - vdoth), 5.);
++	return fresnel;
++}
++
++float4 MainPS(float4 pos : SV_Position) : SV_Target
++{
++	int3 loadPos = int3(pos.xy, 0);
++	float depth = Depth.Load(loadPos).r;
++	float3 albedo = GBufferAlbedo.Load(loadPos).rgb;
++	float3 normal_View = normalize(GBufferNormal.Load(loadPos).rgb);
++	
++	float3 pos_Clip;
++	pos_Clip.x = pos.x * perFrameConstants.RenderResolutionInv.x * 2. - 1.;
++	pos_Clip.y = 1. - pos.y * perFrameConstants.RenderResolutionInv.y * 2.;
++	pos_Clip.z = depth;
++	float4 pos_ViewHomo = mul(perFrameConstants.ProjInv, float4(pos_Clip, 1.0));
++	float3 pos_View = pos_ViewHomo.xyz / pos_ViewHomo.w;
++	
++	float3 dirToLight = g_Light.m_DirectionToLight_Position;
++	float diffuseTerm = max(0.0, dot(normal_View, dirToLight));
++	float3 reflected_View = reflect(-perFrameConstants.DirToLight_View, normal_View);
++	float3 dirToCam_View = normalize(-pos_View);
++	float specularTerm = pow(max(0.0, dot(dirToCam_View, reflected_View)), 15.0);
++	
++	//float3 color = g_Light.m_Color * diffuseTerm * (albedo + specularTerm);
++	float3 color = g_Light.m_Color * diffuseTerm * (lerp(albedo, float3(1.0,1.0,1.0), specularTerm));
++
++	// TEMP
++	float3 l = normalize(dirToLight);
++	float3 v = normalize(dirToCam_View);
++	float3 n = normal_View;
++	float3 h = normalize(l + n);
++	// Fresnel term / specular color
++	//const float3 F0 = float3(0.955, 0.638, 0.538);// Copper
++	//const float3 F0 = float3(0.040, 0.040, 0.040);// Plastic
++	const float3 F0 = albedo;
++	const float roughness = 0.05;
++	float isMetal = 0.;
++	
++#if 0
++	float3 F_Schlick = F0 + (float3(1.0, 1.0, 1.0) - F0) * pow(1.0 - dot(n, l), 5.0);
++
++	color = F_Schlick / 20.0;
++	//color = h * 0.5 + 0.5;
++#endif
++
++#if 0
++	float3 fLambert = albedo / PI;
++	float D = DistributionGGX(n, h, roughness);
++	float k_Direct = (roughness + 1.0) * (roughness + 1.0) / 8.0;
++	float G = GeometrySmith(n, v, l, k_Direct);
++	float3 F = fresnelSchlick(dot(n, h), F0);
++	float3 kS = F; //specular
++	float3 kD = 1.0.xxx - kS;//diffuse
++	//float3 fCookTorrance = 1.0;
++	//color = diffuseTerm * (kD * fLambert + kS * fCookTorrance);
++	//color = F;
++	color = ( kD * fLambert + D*F*G/( 4.0*dot(l,n)*dot(v,n) ) ) * g_Light.m_Color * max(0.0, dot(normal_View, dirToLight));
++	//color = kS;
++#endif
++
++	float3 baseColor = albedo;
++	float3 diffuseColor = isMetal == 1. ? 0.0.xxx : baseColor;
++	float3 specularColor = isMetal == 1. ? baseColor : 0.02.xxx;
++	float roughnessE = roughness * roughness;
++	float roughnessL = max(.01, roughnessE);
++
++	float3 refl = reflect(-dirToCam_View, normal_View);
++	float3 diffuse = {0.,0.,0,};
++	float3 specular = {0.,0.,0,};
++
++	float3 halfVec = normalize(dirToCam_View + dirToLight);
++	float vdoth = saturate(dot(dirToCam_View, halfVec));
++	float ndoth = saturate(dot(normal_View, halfVec));
++	float ndotv = saturate(dot(normal_View, dirToCam_View));
++	float ndotl = saturate(dot(normal_View, dirToLight));
++	float3 envSpecularColor = EnvBRDFApprox(specularColor, roughnessE, ndotv);
++
++	float3 env1 = EnvRemap(float3(0.4, 0.4, 0.4));//texture(iChannel2, refl).xyz);
++	float3 env2 = EnvRemap(float3(0.4, 0.4, 0.4));//texture(iChannel1, refl).xyz);
++	float3 env3 = EnvRemap(float3(0.4, 0.4, 0.4));//SHIrradiance(refl));
++	float3 env = lerp(env1, env2, saturate(roughnessE * 4.));
++	env = lerp(env, env3, saturate((roughnessE - 0.25) / 0.75));
++
++	diffuse += diffuseColor * EnvRemap(SHIrradiance(normal_View));
++	specular += envSpecularColor * env;
++
++	diffuse += diffuseColor * g_Light.m_Color * saturate(dot(normal_View, dirToLight));
++
++	float3 lightF = FresnelTerm(specularColor, vdoth);
++	float lightD = DistributionTerm(roughnessL, ndoth);
++	float lightV = VisibilityTerm(roughnessL, ndotv, ndotl);
++	specular += g_Light.m_Color * lightF * (lightD * lightV * PI * ndotl);
++
++	float ao = 1.;//SceneAO(pos, normal_View, localToWorld);
++	diffuse *= ao;
++	specular *= saturate(pow(ndotv + ao, roughnessE) - 1. + ao);
++
++	color = diffuse + specular;
++	if (false)
++	{
++		color = diffuse;
++	}
++	if (false)
++	{
++		color = specular;
++	}
++	if (false)
++	{
++		color = lightD.xxx;
++	}
++	if (false)
++	{
++		color = envSpecularColor;
++	}
++	if (false)
++	{
++		color = lightV.xxx * (4.0f * ndotv * ndotl);
++	}
++	color = color * .4;
++
++	return float4(color, 1.0);
++}
++
++#endif
+--- /dev/null
++++ WorkingDir/Shaders/Postprocessing.hlsl
+@@ -0,0 +1,17 @@
++#include "Include/Common.hlsl"
++
++#if PIXEL_SHADER
++
++Texture2D<float4> t : register(t0);
++
++float4 MainPS(float4 pos : SV_Position) : SV_Target
++{
++	float3 res = t.Load(int3(pos.xy, 0)).rgb;
++	
++	float gammaInv = 1/2.2;
++	res = pow(res, gammaInv);
++
++	return float4(res, 1);
++}
++
++#endif

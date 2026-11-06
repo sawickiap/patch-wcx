@@ -1,0 +1,6 @@
+[plugininstall]
+description=Patch or diff format
+type=wcx
+file=patch_wcx.wcx64
+defaultdir=patch_wcx
+defaultextension=patch,diff

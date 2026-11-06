@@ -1,0 +1,49 @@
+/*
+Patch WCX - Total Commander packer plugin that allows .diff and .patch files
+to be opened as virtual archives, exposing the hierarchy of affected files.
+
+Copyright (C) 2026 Adam Sawicki
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+*/
+
+// Compatibility exports for the legacy ANSI ABI. Modern hosts use the Unicode exports.
+// Unsupported operations return errors; callback registration is ignored.
+
+extern "C" __declspec(dllexport)
+HANDLE __stdcall OpenArchive(tOpenArchiveData* data) {
+    if(data) data->OpenResult = E_NOT_SUPPORTED;
+    return nullptr;
+}
+
+extern "C" __declspec(dllexport)
+int __stdcall ReadHeader(HANDLE, tHeaderData*) { return E_NOT_SUPPORTED; }
+
+extern "C" __declspec(dllexport)
+int __stdcall ReadHeaderEx(HANDLE, tHeaderDataEx*) { return E_NOT_SUPPORTED; }
+
+extern "C" __declspec(dllexport)
+int __stdcall ProcessFile(HANDLE, int, char*, char*) { return E_NOT_SUPPORTED; }
+
+extern "C" __declspec(dllexport)
+int __stdcall DeleteFiles(char*, char*) { return E_NOT_SUPPORTED; }
+
+extern "C" __declspec(dllexport)
+void __stdcall SetChangeVolProc(HANDLE, tChangeVolProc) {}
+
+extern "C" __declspec(dllexport)
+void __stdcall SetProcessDataProc(HANDLE, tProcessDataProc) {}
+
+extern "C" __declspec(dllexport)
+BOOL __stdcall CanYouHandleThisFile(char*) { return FALSE; }
