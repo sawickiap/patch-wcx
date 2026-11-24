@@ -39,6 +39,15 @@ UniqueHandle OpenFile(wstr_view path) {
     return UniqueHandle(handle);
 }
 
+uint64_t ReadFileSize(HANDLE file, wstr_view path) {
+    LARGE_INTEGER size{};
+    if(!GetFileSizeEx(file, &size)) ThrowIoError("GetFileSizeEx", path);
+    if(size.QuadPart < 0) {
+        throw PatchError(IoErrorDetails{"GetFileSizeEx", path.to_string(), ERROR_INVALID_DATA});
+    }
+    return static_cast<uint64_t>(size.QuadPart);
+}
+
 size_t ReadBytes(HANDLE handle, char* destination, size_t size, wstr_view path) {
     size_t total = 0;
     while(total < size) {
@@ -57,16 +66,27 @@ size_t ReadBytes(HANDLE handle, char* destination, size_t size, wstr_view path) 
 
 }  // namespace
 
+void CheckPatchSize(uint64_t file_size, size_t storage_limit) {
+    if constexpr(sizeof(size_t) == 4) {
+        constexpr uint64_t kMaxPatchSize = 512ULL * 1024 * 1024;
+        if(file_size > kMaxPatchSize) {
+            throw PatchError(ErrorCode::kLimitExceeded, "Patch exceeds the 512 MiB limit on x86");
+        }
+    }
+    if(file_size > storage_limit) {
+        throw PatchError(ErrorCode::kLimitExceeded, "Patch exceeds the string storage limit");
+    }
+}
+
 FilePrefix ReadPrefix(wstr_view path) {
     const auto file = OpenFile(path);
-    LARGE_INTEGER file_size{};
-    if(!GetFileSizeEx(file.get(), &file_size)) ThrowIoError("GetFileSizeEx", path);
+    const uint64_t file_size = ReadFileSize(file.get(), path);
     FilePrefix result;
-    result.bytes.resize(static_cast<size_t>(std::min<uint64_t>(file_size.QuadPart, kProbeSize)));
+    result.bytes.resize(static_cast<size_t>(std::min<uint64_t>(file_size, kProbeSize)));
     if(ReadBytes(file.get(), result.bytes.data(), result.bytes.size(), path) != result.bytes.size()) {
         throw PatchError(IoErrorDetails{"ReadFile", path.to_string(), ERROR_HANDLE_EOF});
     }
-    result.truncated = static_cast<uint64_t>(file_size.QuadPart) > result.bytes.size();
+    result.truncated = file_size > result.bytes.size();
     return result;
 }
 
@@ -83,27 +103,23 @@ UniqueHandle OpenPatchForUpdate(wstr_view path) {
 }
 
 FileContents ReadPatchFile(HANDLE file, wstr_view path) {
-    LARGE_INTEGER file_size{};
+    const uint64_t file_size = ReadFileSize(file, path);
+    FileContents result;
+    CheckPatchSize(file_size, result.bytes.max_size());
+
     FILETIME last_write{};
-    if(!GetFileSizeEx(file, &file_size)) {
-        ThrowIoError("GetFileSizeEx", path);
-    }
     if(!GetFileTime(file, nullptr, nullptr, &last_write)) {
         ThrowIoError("GetFileTime", path);
     }
-    FileContents result;
     result.last_write_time = (static_cast<uint64_t>(last_write.dwHighDateTime) << 32) |
                              last_write.dwLowDateTime;
-    result.bytes.resize(static_cast<size_t>(std::min<uint64_t>(file_size.QuadPart, kProbeSize)));
+    result.bytes.resize(static_cast<size_t>(std::min<uint64_t>(file_size, kProbeSize)));
     if(ReadBytes(file, result.bytes.data(), result.bytes.size(), path) != result.bytes.size()) {
         throw PatchError(IoErrorDetails{"ReadFile", path.to_string(), ERROR_HANDLE_EOF});
     }
-    ValidatePatchPrefix(result.bytes, static_cast<uint64_t>(file_size.QuadPart) > result.bytes.size());
-    if(static_cast<uint64_t>(file_size.QuadPart) > result.bytes.max_size()) {
-        throw PatchError(ErrorCode::kLimitExceeded, "Patch exceeds the string storage limit");
-    }
+    ValidatePatchPrefix(result.bytes, file_size > result.bytes.size());
     const size_t prefix_size = result.bytes.size();
-    result.bytes.resize(static_cast<size_t>(file_size.QuadPart));
+    result.bytes.resize(static_cast<size_t>(file_size));
     if(ReadBytes(file, result.bytes.data() + prefix_size, result.bytes.size() - prefix_size,
                  path) != result.bytes.size() - prefix_size) {
         throw PatchError(IoErrorDetails{"ReadFile", path.to_string(), ERROR_HANDLE_EOF});

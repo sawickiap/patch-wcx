@@ -36,6 +36,9 @@ struct FilePrefix {
     bool truncated;
 };
 
+// Checks the full input length before it is used to allocate storage or index lines.
+void CheckPatchSize(uint64_t file_size, size_t storage_limit);
+
 // Reads at most kProbeSize bytes; the file size determines whether the prefix is truncated.
 FilePrefix ReadPrefix(wstr_view path);
 FileContents ReadPatchFile(wstr_view path);

@@ -25,3 +25,10 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #include <new>
 
 #include <wcxhead.h>
+
+// The x86 module definition file exports undecorated aliases for the stdcall symbols.
+#ifdef _WIN64
+#define PATCH_WCX_EXPORT extern "C" __declspec(dllexport)
+#else
+#define PATCH_WCX_EXPORT extern "C"
+#endif

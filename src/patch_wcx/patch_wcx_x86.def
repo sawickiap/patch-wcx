@@ -1,0 +1,19 @@
+EXPORTS
+    GetPackerCaps=_GetPackerCaps@0
+    GetBackgroundFlags=_GetBackgroundFlags@0
+    OpenArchiveW=_OpenArchiveW@4
+    CloseArchive=_CloseArchive@4
+    ReadHeaderExW=_ReadHeaderExW@8
+    ProcessFileW=_ProcessFileW@16
+    SetChangeVolProcW=_SetChangeVolProcW@8
+    SetProcessDataProcW=_SetProcessDataProcW@8
+    DeleteFilesW=_DeleteFilesW@8
+    CanYouHandleThisFileW=_CanYouHandleThisFileW@4
+    OpenArchive=_OpenArchive@4
+    ReadHeader=_ReadHeader@8
+    ReadHeaderEx=_ReadHeaderEx@8
+    ProcessFile=_ProcessFile@16
+    DeleteFiles=_DeleteFiles@8
+    SetChangeVolProc=_SetChangeVolProc@8
+    SetProcessDataProc=_SetProcessDataProc@8
+    CanYouHandleThisFile=_CanYouHandleThisFile@4

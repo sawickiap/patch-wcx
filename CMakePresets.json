@@ -8,11 +8,20 @@
       "architecture": "x64",
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": { "BUILD_TESTING": "ON" }
+    },
+    {
+      "name": "vs2026-x86",
+      "inherits": "vs2026",
+      "displayName": "Visual Studio 2026 x86",
+      "architecture": "Win32",
+      "binaryDir": "${sourceDir}/build-x86"
     }
   ],
   "buildPresets": [
     { "name": "debug", "configurePreset": "vs2026", "configuration": "Debug" },
-    { "name": "release", "configurePreset": "vs2026", "configuration": "Release" }
+    { "name": "release", "configurePreset": "vs2026", "configuration": "Release" },
+    { "name": "debug-x86", "inherits": "debug", "configurePreset": "vs2026-x86" },
+    { "name": "release-x86", "inherits": "release", "configurePreset": "vs2026-x86" }
   ],
   "testPresets": [
     {
@@ -28,6 +37,8 @@
       "configuration": "Release",
       "output": { "outputOnFailure": true },
       "execution": { "noTestsAction": "error" }
-    }
+    },
+    { "name": "debug-x86", "inherits": "debug", "configurePreset": "vs2026-x86" },
+    { "name": "release-x86", "inherits": "release", "configurePreset": "vs2026-x86" }
   ]
 }

@@ -21,9 +21,31 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 cmake_minimum_required(VERSION 3.31)
 project(patch_wcx LANGUAGES CXX RC)
 
-if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8 OR
-   NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64)$")
-    message(FATAL_ERROR "Patch WCX requires Windows x86-64.")
+if(NOT WIN32)
+    message(FATAL_ERROR "Patch WCX requires Windows x86 or x64.")
+endif()
+if(CMAKE_VS_PLATFORM_NAME)
+    if(NOT ((CMAKE_VS_PLATFORM_NAME STREQUAL "Win32" AND CMAKE_SIZEOF_VOID_P EQUAL 4) OR
+            (CMAKE_VS_PLATFORM_NAME STREQUAL "x64" AND CMAKE_SIZEOF_VOID_P EQUAL 8)))
+        message(FATAL_ERROR "Patch WCX requires a Win32 or x64 target.")
+    endif()
+else()
+    include(CheckCXXSourceCompiles)
+    check_cxx_source_compiles([=[
+        #if defined(_M_ARM64EC)
+        #error Unsupported target
+        #elif defined(_M_IX86) || defined(__i386__)
+        static_assert(sizeof(void*) == 4);
+        #elif defined(_M_X64) || defined(__x86_64__)
+        static_assert(sizeof(void*) == 8);
+        #else
+        #error Unsupported target
+        #endif
+        int main() {}
+    ]=] PATCH_WCX_X86_OR_X64)
+    if(NOT PATCH_WCX_X86_OR_X64)
+        message(FATAL_ERROR "Patch WCX requires an x86 or x64 target.")
+    endif()
 endif()
 
 set(CMAKE_CXX_STANDARD 20)

@@ -26,9 +26,18 @@ add_library(patch_wcx SHARED
     patch_wcx.rc
 )
 target_link_libraries(patch_wcx PRIVATE patch_backend total_commander)
-target_compile_definitions(patch_wcx PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN STRICT UNICODE _UNICODE)
+if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+    set(patch_wcx_suffix ".wcx")
+    target_sources(patch_wcx PRIVATE patch_wcx_x86.def)
+else()
+    set(patch_wcx_suffix ".wcx64")
+endif()
+target_compile_definitions(patch_wcx PRIVATE
+    NOMINMAX WIN32_LEAN_AND_MEAN STRICT UNICODE _UNICODE
+    PATCH_WCX_FILENAME="patch_wcx${patch_wcx_suffix}"
+)
 target_precompile_headers(patch_wcx PRIVATE precompiled_header.hpp)
-set_target_properties(patch_wcx PROPERTIES PREFIX "" SUFFIX ".wcx64")
+set_target_properties(patch_wcx PROPERTIES PREFIX "" SUFFIX "${patch_wcx_suffix}")
 if(MSVC)
     target_compile_options(patch_wcx PRIVATE /W4 /utf-8 /permissive-)
 endif()

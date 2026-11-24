@@ -21,29 +21,29 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 // Compatibility exports for the legacy ANSI ABI. Modern hosts use the Unicode exports.
 // Unsupported operations return errors; callback registration is ignored.
 
-extern "C" __declspec(dllexport)
+PATCH_WCX_EXPORT
 HANDLE __stdcall OpenArchive(tOpenArchiveData* data) {
     if(data) data->OpenResult = E_NOT_SUPPORTED;
     return nullptr;
 }
 
-extern "C" __declspec(dllexport)
+PATCH_WCX_EXPORT
 int __stdcall ReadHeader(HANDLE, tHeaderData*) { return E_NOT_SUPPORTED; }
 
-extern "C" __declspec(dllexport)
+PATCH_WCX_EXPORT
 int __stdcall ReadHeaderEx(HANDLE, tHeaderDataEx*) { return E_NOT_SUPPORTED; }
 
-extern "C" __declspec(dllexport)
+PATCH_WCX_EXPORT
 int __stdcall ProcessFile(HANDLE, int, char*, char*) { return E_NOT_SUPPORTED; }
 
-extern "C" __declspec(dllexport)
+PATCH_WCX_EXPORT
 int __stdcall DeleteFiles(char*, char*) { return E_NOT_SUPPORTED; }
 
-extern "C" __declspec(dllexport)
+PATCH_WCX_EXPORT
 void __stdcall SetChangeVolProc(HANDLE, tChangeVolProc) {}
 
-extern "C" __declspec(dllexport)
+PATCH_WCX_EXPORT
 void __stdcall SetProcessDataProc(HANDLE, tProcessDataProc) {}
 
-extern "C" __declspec(dllexport)
+PATCH_WCX_EXPORT
 BOOL __stdcall CanYouHandleThisFile(char*) { return FALSE; }

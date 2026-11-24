@@ -72,6 +72,7 @@ PatchArchive PatchArchive::Open(wstr_view path) {
 }
 
 PatchArchive PatchArchive::Parse(std::string bytes) {
+    detail::CheckPatchSize(bytes.size(), bytes.max_size());
     detail::ValidatePatchPrefix(str_view(bytes).substr(0, detail::kProbeSize), bytes.size() > detail::kProbeSize);
     return PatchArchive(std::move(bytes));
 }
@@ -121,7 +122,8 @@ PatchArchive::PatchArchive(std::string bytes) : text_(std::move(bytes)) {
 
 uint64_t PatchArchive::CalculateFileSize(size_t first_line, size_t end_line) const {
     const uint64_t envelope_size = prefix_end_ != 0 ?
-        text_.GetBytes(0, prefix_end_).length() + text_.GetBytes(suffix_begin_, text_.GetLineCount()).length() : 0;
+        static_cast<uint64_t>(text_.GetBytes(0, prefix_end_).length()) +
+        text_.GetBytes(suffix_begin_, text_.GetLineCount()).length() : 0;
     return envelope_size + text_.GetBytes(first_line, end_line).length() +
            (text_.HasUtf8Bom() ? sizeof(detail::kUtf8Bom) - 1 : 0);
 }

@@ -23,8 +23,8 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
 
 1 VERSIONINFO
-FILEVERSION 1,0,0,0
-PRODUCTVERSION 1,0,0,0
+FILEVERSION 1,1,0,0
+PRODUCTVERSION 1,1,0,0
 FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
 #ifdef _DEBUG
 FILEFLAGS VS_FF_DEBUG
@@ -41,12 +41,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Adam Sawicki Software Development\0"
             VALUE "FileDescription", "Patch WCX - Total Commander packer plugin\0"
-            VALUE "FileVersion", "1.0\0"
+            VALUE "FileVersion", "1.1\0"
             VALUE "InternalName", "patch_wcx\0"
             VALUE "LegalCopyright", "Copyright (C) 2026 Adam Sawicki\0"
-            VALUE "OriginalFilename", "patch_wcx.wcx64\0"
+            VALUE "OriginalFilename", PATCH_WCX_FILENAME
             VALUE "ProductName", "Patch WCX\0"
-            VALUE "ProductVersion", "1.0\0"
+            VALUE "ProductVersion", "1.1\0"
         END
     END
     BLOCK "VarFileInfo"

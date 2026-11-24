@@ -7,7 +7,7 @@ Patch WCX is a Total Commander packer plugin that opens `.diff` and `.patch` fil
 
 With Patch WCX, you can ➡️ open a patch like an archive, ➡️ navigate its directory tree, and ➡️ view, ➡️ extract, or ➡️ delete just the changes for individual files you need.
 
-**Version 1.0** — see the [changelog](CHANGELOG.md).
+**Version 1.1** — see the [changelog](CHANGELOG.md).
 
 Source code and issue tracker: [github.com/sawickiap/patch-wcx](https://github.com/sawickiap/patch-wcx).
 
@@ -26,9 +26,9 @@ Virtual files contain patch documents. For example, viewing or extracting `src/m
 
 ## Requirements
 
-- x64 PC (Intel/AMD)
+- x86 or x64 PC (Intel/AMD)
 - Windows 10 or 11
-- 64-bit version of Total Commander
+- 32-bit or 64-bit Total Commander
 
 ## Installation
 
@@ -36,7 +36,7 @@ Virtual files contain patch documents. For example, viewing or extracting `src/m
 2. Open the ZIP in Total Commander. It triggers the plugin installer.
 3. Confirm installation and choose the plugin directory. The package registers the plugin for `.patch` and `.diff` files.
 
-For manual installation, extract the ZIP, then open: Configuration → Options → Plugins → Packer plugins (.WCX) → Configure. Add `patch_wcx.wcx64` for both the `patch` and `diff` extensions.
+For manual installation, extract the ZIP, then go to Configuration → Options → Plugins → Packer plugins (.WCX) → Configure. Add `patch_wcx.wcx` for 32-bit Total Commander or `patch_wcx.wcx64` for 64-bit Total Commander. Register both the `patch` and `diff` extensions.
 
 ## Usage
 
@@ -111,9 +111,15 @@ The project uses C++20, CMake, and Visual Studio 2026 with the C++ desktop tools
 cmake --preset vs2026
 cmake --build --preset release
 ctest --preset release
+
+cmake --preset vs2026-x86
+cmake --build --preset release-x86
+ctest --preset release-x86
 ```
 
-The plugin is generated at `build/src/patch_wcx/Release/patch_wcx.wcx64`. To build without tests, configure with `cmake --preset vs2026 -DBUILD_TESTING=OFF` and omit the `ctest` command.
+The x64 build produces `build/src/patch_wcx/Release/patch_wcx.wcx64`. The x86 build produces `build-x86/src/patch_wcx/Release/patch_wcx.wcx`. To build without tests, pass `-DBUILD_TESTING=OFF` to each configure command and omit the `ctest` commands.
+
+After building both Release DLLs from the same source revision, run `./packaging/package.ps1` to create `build/patch-wcx.zip` with both variants, `pluginst.inf`, `LICENSE`, and `README.md`.
 
 ## Author and license
 

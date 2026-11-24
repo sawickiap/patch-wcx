@@ -71,18 +71,18 @@ bool IsArchiveHandle(HANDLE handle) noexcept {
 
 }  // namespace
 
-extern "C" __declspec(dllexport)
+PATCH_WCX_EXPORT
 int __stdcall GetPackerCaps() {
     return PK_CAPS_MULTIPLE | PK_CAPS_SEARCHTEXT | PK_CAPS_DELETE | PK_CAPS_BY_CONTENT;
 }
 
-extern "C" __declspec(dllexport)
+PATCH_WCX_EXPORT
 int __stdcall GetBackgroundFlags() {
     return BACKGROUND_UNPACK;
 }
 
 // Returns an owned per-archive context; all failures are reported through OpenResult.
-extern "C" __declspec(dllexport)
+PATCH_WCX_EXPORT
 HANDLE __stdcall OpenArchiveW(tOpenArchiveDataW* data) {
     if(!data) return nullptr;
     data->OpenResult = 0;
@@ -104,7 +104,7 @@ HANDLE __stdcall OpenArchiveW(tOpenArchiveDataW* data) {
     }
 }
 
-extern "C" __declspec(dllexport)
+PATCH_WCX_EXPORT
 int __stdcall CloseArchive(HANDLE handle) {
     if(!IsArchiveHandle(handle)) return E_BAD_DATA;
     delete static_cast<patch_wcx::ArchiveHandle*>(handle);
@@ -112,7 +112,7 @@ int __stdcall CloseArchive(HANDLE handle) {
 }
 
 // WCX calls this alternately with ProcessFileW; names and sizes use the Unicode/64-bit ABI.
-extern "C" __declspec(dllexport)
+PATCH_WCX_EXPORT
 int __stdcall ReadHeaderExW(HANDLE handle, tHeaderDataExW* header) {
     if(!IsArchiveHandle(handle) || !header) return E_BAD_DATA;
     try {
@@ -123,7 +123,7 @@ int __stdcall ReadHeaderExW(HANDLE handle, tHeaderDataExW* header) {
 }
 
 // No C++ exception, including callback cancellation, may cross the host ABI.
-extern "C" __declspec(dllexport)
+PATCH_WCX_EXPORT
 int __stdcall ProcessFileW(HANDLE handle, int operation, wchar_t* dest_path, wchar_t* dest_name) {
     if(!IsArchiveHandle(handle)) return E_BAD_DATA;
     try {
@@ -133,12 +133,12 @@ int __stdcall ProcessFileW(HANDLE handle, int operation, wchar_t* dest_path, wch
     }
 }
 
-extern "C" __declspec(dllexport)
+PATCH_WCX_EXPORT
 void __stdcall SetChangeVolProcW(HANDLE, tChangeVolProcW) {
     // Patches are single-volume files.
 }
 
-extern "C" __declspec(dllexport)
+PATCH_WCX_EXPORT
 void __stdcall SetProcessDataProcW(HANDLE handle, tProcessDataProcW callback) {
     if(IsArchiveHandle(handle)) {
         static_cast<patch_wcx::ArchiveHandle*>(handle)->SetProcessDataProc(callback);
@@ -148,7 +148,7 @@ void __stdcall SetProcessDataProcW(HANDLE handle, tProcessDataProcW callback) {
 }
 
 // Deletes the complete WCX selection in one operation; exceptions never cross the ABI.
-extern "C" __declspec(dllexport)
+PATCH_WCX_EXPORT
 int __stdcall DeleteFilesW(wchar_t* path, wchar_t* delete_list) {
     if(!path || !delete_list) return E_BAD_DATA;
     try {
@@ -160,7 +160,7 @@ int __stdcall DeleteFilesW(wchar_t* path, wchar_t* delete_list) {
 }
 
 // Bounded content recognition is tentative. Any error means the file is unrecognized.
-extern "C" __declspec(dllexport)
+PATCH_WCX_EXPORT
 BOOL __stdcall CanYouHandleThisFileW(wchar_t* path) {
     if(!path) return FALSE;
     try {

@@ -18,6 +18,7 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
+#include <patch_backend/file_io.hpp>
 #include <patch_backend/patch_archive.hpp>
 #include <patch_backend/patch_error.hpp>
 
@@ -317,6 +318,28 @@ TEST_CASE("Empty and BOM-only patches open but are not recognized by content", "
         const TestFile file(bytes);
         REQUIRE(PatchArchive::Open(file.GetPath()).GetEntries().empty());
         REQUIRE_FALSE(PatchArchive::CanOpen(file.GetPath()));
+    }
+}
+
+TEST_CASE("Patch size checks preserve wide disk sizes", "[limits]") {
+    constexpr uint64_t x86_limit = 512ULL * 1024 * 1024;
+    constexpr uint64_t wide_disk_size = (1ULL << 32) + 64 * 1024;
+    const size_t storage_limit = std::string{}.max_size();
+    const auto limit_error = Catch::Matchers::Predicate<PatchError>(
+        [](const PatchError& error) { return error.GetCode() == ErrorCode::kLimitExceeded; });
+
+    REQUIRE_NOTHROW(detail::CheckPatchSize(4096, 4096));
+    REQUIRE_THROWS_MATCHES(detail::CheckPatchSize(4097, 4096), PatchError, limit_error);
+    REQUIRE_NOTHROW(detail::CheckPatchSize(x86_limit - 1, storage_limit));
+    REQUIRE_NOTHROW(detail::CheckPatchSize(x86_limit, storage_limit));
+    if constexpr(sizeof(size_t) == 4) {
+        REQUIRE_THROWS_MATCHES(detail::CheckPatchSize(x86_limit + 1, storage_limit),
+                               PatchError, limit_error);
+        REQUIRE_THROWS_MATCHES(detail::CheckPatchSize(wide_disk_size, storage_limit),
+                               PatchError, limit_error);
+    } else {
+        REQUIRE_NOTHROW(detail::CheckPatchSize(x86_limit + 1, storage_limit));
+        REQUIRE_NOTHROW(detail::CheckPatchSize(wide_disk_size, storage_limit));
     }
 }
 
